@@ -1,0 +1,52 @@
+name: Update financial data
+
+on:
+  schedule:
+    - cron: "0 13 * * 6"   # 每週六 UTC 13:00＝台灣 21:00
+  workflow_dispatch:       # 允許手動觸發
+
+permissions:
+  contents: write
+
+jobs:
+  update-financial:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "release"
+          use-public-rspm: true
+
+      - name: Install R packages
+        shell: Rscript {0}
+        run: |
+          install.packages(c("httr2", "jsonlite", "dplyr", "purrr"))
+
+      - name: Run update_financial.R
+        run: Rscript update_financial.R
+
+      - name: Validate result (protect existing good data)
+        id: validate
+        run: |
+          if Rscript -e 'fd <- readRDS("data/financial_data.rds"); ok <- sum(vapply(fd$stocks, function(s) is.finite(s$totalRevenue), logical(1))); cat("valid stocks:", ok, "\n"); quit(status = if (ok >= 10) 0 else 1)'; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit updated financial data
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A data/
+          if git diff --cached --quiet; then
+            echo "No financial data changes."
+          else
+            git commit -m "Weekly financial data update"
+            git push
+          fi
