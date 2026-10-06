@@ -2,11 +2,10 @@ name: Update stock data
 
 on:
   schedule:
-    # 每天台灣時間 19:40 執行
-    # GitHub 使用 UTC，台灣為 UTC+8
-    - cron: "40 11 * * *"
-
-  # 允許在 GitHub Actions 頁面手動執行
+    # 每天台灣時間 19:00 執行 (UTC 11:00)
+    - cron: "00 11 * * *"
+  
+  # 允許在 GitHub Actions 頁面手動點擊執行
   workflow_dispatch:
 
 permissions:
@@ -27,15 +26,11 @@ jobs:
         with:
           r-version: "release"
 
-      # 3. 安裝 update_data.R 需要的套件
+      # 3. 安裝 update_data.R 需要的套件 (修正版：直接使用 Rscript 安裝)
       - name: Install R packages
-        uses: r-lib/actions/setup-r-dependencies@v2
-        with:
-          packages: |
-            any::tidyquant
-            any::dplyr
-            any::readr
-            any::lubridate
+        run: |
+          install.packages(c("tidyquant", "dplyr", "readr", "lubridate", "purrr", "stringr", "httr2", "jsonlite"))
+        shell: Rscript {0}
 
       # 4. 執行資料更新程式
       - name: Update stock data
@@ -46,12 +41,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add data/stock_data.rds data/data_meta.json
-
+          
+          # 強制加入被 .gitignore 忽略的資料檔
+          git add -f data/stock_data.rds data/data_meta.json dashboard/data/stock_data.csv
+          
           if git diff --cached --quiet; then
             echo "No data changes to commit."
           else
-            git commit -m "Update stock data"
+            git commit -m "Daily data update $(date -u +%Y-%m-%d)"
             git push
           fi
