@@ -1,52 +1,53 @@
-name: Update financial data
+name: Update stock data
 
 on:
   schedule:
-    - cron: "0 11 * * 6"   # 每週六 UTC 11:00＝台灣 19:00
-  workflow_dispatch:       # 允許手動觸發
+    # 每天台灣時間 19:00 執行 (UTC 11:00)
+    - cron: "00 11 * * *"
+  
+  # 允許在 GitHub Actions 頁面手動點擊執行
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  update-financial:
+  update-data:
     runs-on: ubuntu-latest
+
     steps:
+      # 1. 下載目前 repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. 安裝 R
       - name: Setup R
         uses: r-lib/actions/setup-r@v2
         with:
           r-version: "release"
-          use-public-rspm: true
 
+      # 3. 安裝 update_data.R 需要的套件 (修正版：直接使用 Rscript 安裝)
       - name: Install R packages
+        run: |
+          install.packages(c("tidyquant", "dplyr", "readr", "lubridate", "purrr", "stringr", "httr2", "jsonlite"))
         shell: Rscript {0}
-        run: |
-          install.packages(c("httr2", "jsonlite", "dplyr", "purrr"))
 
-      - name: Run update_financial.R
-        run: Rscript update_financial.R
+      # 4. 執行資料更新程式
+      - name: Update stock data
+        run: Rscript update_data.R
 
-      - name: Validate result (protect existing good data)
-        id: validate
-        run: |
-          if Rscript -e 'fd <- readRDS("data/financial_data.rds"); ok <- sum(vapply(fd$stocks, function(s) is.finite(s$totalRevenue), logical(1))); cat("valid stocks:", ok, "\n"); quit(status = if (ok >= 10) 0 else 1)'; then
-            echo "valid=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "valid=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Commit updated financial data
-        if: steps.validate.outputs.valid == 'true'
+      # 5. 將更新後的資料提交回 GitHub
+      - name: Commit updated data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A data/
+          
+          # 強制加入被 .gitignore 忽略的資料檔
+          git add -f data/stock_data.rds data/data_meta.json dashboard/data/stock_data.csv
+          
           if git diff --cached --quiet; then
-            echo "No financial data changes."
+            echo "No data changes to commit."
           else
-            git commit -m "Weekly financial data update"
+            git commit -m "Daily data update $(date -u +%Y-%m-%d)"
             git push
           fi
