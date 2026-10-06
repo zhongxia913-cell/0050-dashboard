@@ -1,0 +1,7 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+data/stock_data.rds
+data/data_meta.json
+dashboard/data/stock_data.csv
