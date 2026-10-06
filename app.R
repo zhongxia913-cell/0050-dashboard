@@ -7,6 +7,8 @@ library(shiny)
 library(ggplot2)
 library(dplyr)
 library(tidyr)
+source("indicators_technical.R", local = TRUE)
+
 
 options(scipen = 999)
 # ============================================================
@@ -1232,240 +1234,109 @@ ui <- fluidPage(
     
     
     # ========================================================
-    # 3. 個股分析
+    # 3. 個股分析 (含子分頁)
     # ========================================================
     
     tabPanel(
-      
       "個股分析",
       
-      div(
-        class = "section-box",
+      # 使用 tabsetPanel 建立子分頁
+      tabsetPanel(
+        id = "stock_subtabs",
         
-        h2("個股分析"),
-        
-        p(
-          class = "page-description",
-          "最多選擇 5 檔股票，以指定期間比較價格、累積報酬、日對數報酬與風險。"
-        ),
-        
-        div(
-          class = "reading-guide",
-          strong("分析原則："),
-          "研究分析使用調整後價格；日對數報酬率為 ln(Pt / Pt-1)。"
-        ),
-        
-        selectizeInput(
-          "selected_stock",
-          "請選擇股票（最多 5 檔）：",
-          choices = dashboard_stock_choices,
-          selected = "0050",
-          multiple = TRUE,
-          options = list(
-            maxItems = MAX_SELECTED_STOCKS,
-            plugins = list("remove_button")
+        # === 子分頁 1：原本的報酬與風險分析 ===
+        tabPanel(
+          "報酬與風險分析",
+          div(
+            class = "section-box",
+            h2("個股分析：報酬與風險"),
+            p(class = "page-description", "最多選擇 5 檔股票，以指定期間比較價格、累積報酬、日對數報酬與風險。"),
+            div(class = "reading-guide", strong("分析原則："), "研究分析使用調整後價格；日對數報酬率為 ln(Pt / Pt-1)。"),
+            
+            selectizeInput("selected_stock", "請選擇股票（最多 5 檔）：",
+                           choices = dashboard_stock_choices, selected = "0050", multiple = TRUE,
+                           options = list(maxItems = MAX_SELECTED_STOCKS, plugins = list("remove_button"))),
+            
+            div(class = "quick-button-row", strong("快速期間："),
+                actionButton("period_research", "研究期間"), actionButton("period_all", "全部"),
+                actionButton("period_1m", "1 個月"), actionButton("period_1q", "1 季"),
+                actionButton("period_6m", "6 個月"), actionButton("period_1y", "1 年"),
+                actionButton("period_ytd", "今年以來")),
+            
+            dateRangeInput("date_range", "分析期間：",
+                           start = RESEARCH_START_DATE, end = min(RESEARCH_END_DATE, data_max_date),
+                           min = data_min_date, max = data_max_date, format = "yyyy-mm-dd", separator = " 至 "),
+            
+            textOutput("analysis_period_text"), hr(),
+            h3("所選股票實際資料期間"), tableOutput("selected_stock_ranges"), uiOutput("stock_warning"), hr(),
+            
+            h3("調整後收盤價"), plotOutput("price_plot", height = "500px"),
+            div(class = "plot-explanation", strong("怎麼看？ "), "價格圖主要看趨勢。不同股票價格尺度不同，因此比較績效時應搭配累積報酬率。"),
+            uiOutput("cumulative_return_display"), hr(),
+            
+            h3("日對數報酬描述統計"), tableOutput("return_summary"), hr(),
+            h3("日對數報酬分布"), uiOutput("return_distribution_ui"),
+            div(class = "plot-explanation", strong("怎麼看？ "), "直方圖呈現實際日對數報酬；深色曲線為依該股票樣本平均數與標準差估計的常態機率密度函數。若實際分布與曲線差異較大，表示資料未必符合常態分布。"), hr(),
+            
+            h3("日對數報酬箱型圖"), uiOutput("return_boxplot_ui"),
+            div(class = "plot-explanation", strong("怎麼看？ "), "箱體代表中間 50% 的報酬分布。箱體越高通常表示報酬波動範圍越大。"), hr(),
+            
+            h3("日對數報酬時間序列"), uiOutput("log_return_series_ui"),
+            div(class = "plot-explanation", strong("怎麼看？ "), "每檔股票各自一張圖，可以直接觀察高波動與極端報酬發生在哪些日期。"), hr(),
+            
+            h3("期間績效"), tableOutput("period_performance"), hr(),
+            h3("價格描述統計"), tableOutput("price_summary"), hr(),
+            h3("風險摘要"), tableOutput("risk_summary"), hr(),
+            
+            h3("回撤"), uiOutput("drawdown_charts_ui"),
+            div(class = "plot-explanation", strong("怎麼看？ "), "回撤表示價格從之前高點下跌多少。越接近 0% 表示越接近高點，負值越深表示回落幅度越大。"), hr(),
+            
+            h3("報酬與風險關係"), plotOutput("return_risk_chart", height = "550px"),
+            div(class = "plot-explanation", strong("怎麼看？ "), "越往右代表年化波動度越高；越往上代表年化報酬率越高。右上方代表報酬與波動都較高，左下方則代表報酬與波動都較低。這張圖主要用來觀察報酬與風險的分布關係。")
           )
         ),
         
-        
-        
-        div(
-          class = "quick-button-row",
-          
-          strong("快速期間："),
-          
-          actionButton(
-            "period_research",
-            "研究期間"
-          ),
-          
-          actionButton(
-            "period_all",
-            "全部"
-          ),
-          
-          actionButton(
-            "period_1m",
-            "1 個月"
-          ),
-          
-          actionButton(
-            "period_1q",
-            "1 季"
-          ),
-          
-          actionButton(
-            "period_6m",
-            "6 個月"
-          ),
-          
-          actionButton(
-            "period_1y",
-            "1 年"
-          ),
-          
-          actionButton(
-            "period_ytd",
-            "今年以來"
+        # === 子分頁 2：新增的技術指標 K 線 ===
+        tabPanel(
+          "技術指標 K 線",
+          div(
+            class = "section-box",
+            h2("技術指標 K 線"),
+            p(class = "page-description",
+              "K 線主圖疊加移動平均線；副圖可自由勾選技術指標。ADR、ADL、OBOS 為市場廣度指標，以 0050 成分股代理計算。"),
+            
+            selectInput("tech_stock", "請選擇單一股票查看 K 線：",
+                        choices = dashboard_stock_choices, selected = "0050"),
+            
+            sliderInput("tech_days", "顯示最近幾個交易日：",
+                        min = 60, max = 300, value = 120, step = 10),
+            
+            checkboxGroupInput("tech_mas", "主圖均線：",
+                               choices = c("MA5", "MA10", "MA20", "MA60", "MA120", "MA240"),
+                               selected = c("MA5", "MA20", "MA60"), inline = TRUE),
+            
+            plotOutput("tech_main_chart", height = "550px"),
+            
+            hr(),
+            h3("技術指標副圖"),
+            checkboxGroupInput("tech_subs", "選擇副圖（可複選）：",
+                               choices = c("成交量 VOL", "MACD (DIF/DEA/OSC)", "相對強弱 RSI",
+                                           "隨機指標 KD", "乖離率 BIAS", "OBV 線",
+                                           "量強弱 VR", "趨向指標 DMI", "威廉指標 WMS%R",
+                                           "心理線 PSY", "寶塔線"),
+                               selected = c("成交量 VOL", "MACD (DIF/DEA/OSC)",
+                                            "相對強弱 RSI", "隨機指標 KD"), inline = TRUE),
+            
+            uiOutput("tech_sub_ui"),
+            
+            hr(),
+            h3("市場廣度指標（0050 成分股代理）"),
+            p(class = "page-description", "以下指標反映整體市場漲跌家數的動能，非單一股票指標。"),
+            uiOutput("breadth_ui")
           )
-        ),
-        
-        dateRangeInput(
-          "date_range",
-          "分析期間：",
-          start = RESEARCH_START_DATE,
-          end = min(
-            RESEARCH_END_DATE,
-            data_max_date
-          ),
-          min = data_min_date,
-          max = data_max_date,
-          format = "yyyy-mm-dd",
-          separator = " 至 "
-        ),
-        
-        textOutput(
-          "analysis_period_text"
-        ),
-        
-        hr(),
-        
-        h3("所選股票實際資料期間"),
-        
-        tableOutput(
-          "selected_stock_ranges"
-        ),
-        
-        uiOutput(
-          "stock_warning"
-        ),
-        
-        hr(),
-        
-        h3("調整後收盤價"),
-        
-        plotOutput(
-          "price_plot",
-          height = "500px"
-        ),
-        
-        div(
-          class = "plot-explanation",
-          strong("怎麼看？ "),
-          "價格圖主要看趨勢。不同股票價格尺度不同，因此比較績效時應搭配累積報酬率。"
-        ),
-        
-        uiOutput(
-          "cumulative_return_display"
-        ),
-        
-        
-        
-        hr(),
-        
-        h3("日對數報酬描述統計"),
-        
-        tableOutput(
-          "return_summary"
-        ),
-        
-        hr(),
-        
-        h3("日對數報酬分布"),
-        
-        uiOutput(
-          "return_distribution_ui"
-        ),
-        
-        div(
-          class = "plot-explanation",
-          strong("怎麼看？ "),
-          "直方圖呈現實際日對數報酬；深色曲線為依該股票樣本平均數與標準差估計的常態機率密度函數。若實際分布與曲線差異較大，表示資料未必符合常態分布。"
-        ),
-        
-        
-        hr(),
-        
-        h3("日對數報酬箱型圖"),
-        
-        uiOutput(
-          "return_boxplot_ui"
-        ),
-        
-        div(
-          class = "plot-explanation",
-          strong("怎麼看？ "),
-          "箱體代表中間 50% 的報酬分布。箱體越高通常表示報酬波動範圍越大。"
-        ),
-        
-        hr(),
-        
-        h3("日對數報酬時間序列"),
-        
-        uiOutput(
-          "log_return_series_ui"
-        ),
-        
-        div(
-          class = "plot-explanation",
-          strong("怎麼看？ "),
-          "每檔股票各自一張圖，可以直接觀察高波動與極端報酬發生在哪些日期。"
-        ),
-        
-        hr(),
-        
-        h3("期間績效"),
-        
-        tableOutput(
-          "period_performance"
-        ),
-        
-        hr(),
-        
-        h3("價格描述統計"),
-        
-        tableOutput(
-          "price_summary"
-        ),
-        
-        hr(),
-        
-        h3("風險摘要"),
-        
-        tableOutput(
-          "risk_summary"
-        ),
-        
-        hr(),
-        
-        h3("回撤"),
-        
-        uiOutput(
-          "drawdown_charts_ui"
-        ),
-        
-        div(
-          class = "plot-explanation",
-          strong("怎麼看？ "),
-          "回撤表示價格從之前高點下跌多少。越接近 0% 表示越接近高點，負值越深表示回落幅度越大。"
-        ),
-        
-        hr(),
-        
-        h3("報酬與風險關係"),
-        
-        plotOutput(
-          "return_risk_chart",
-          height = "550px"
-        ),
-        div(
-          class = "plot-explanation",
-          strong("怎麼看？ "),
-          "越往右代表年化波動度越高；越往上代表年化報酬率越高。右上方代表報酬與波動都較高，左下方則代表報酬與波動都較低。這張圖主要用來觀察報酬與風險的分布關係。"
         )
       )
     ),
-    
     
     # ========================================================
     # 4. 產業比較
@@ -4014,6 +3885,45 @@ server <- function(input, output, session) {
   hover = TRUE
   )
   
+  # ==========================================================
+  # 5.5 技術指標 K 線 (Server)
+  # ==========================================================
+  tech_full <- reactive({
+    d <- data() %>% filter(symbol == input$tech_stock)
+    req(nrow(d) > 60)
+    calc_technical_one(d)
+  })
+  
+  tech_view <- reactive({
+    slice_tail(tech_full(), n = input$tech_days)
+  })
+  
+  output$tech_main_chart <- renderPlot({
+    plot_candlestick(tech_view(), input$tech_mas)
+  })
+  
+  output$tech_sub_ui <- renderUI({
+    sel <- input$tech_subs
+    req(length(sel) > 0)
+    df <- tech_view()
+    lapply(seq(1, length(sel), by = 2), function(i) {
+      ids <- sel[i:min(i + 1, length(sel))]
+      fluidRow(lapply(ids, function(nm) {
+        pid <- paste0("tech_sub_", make.names(nm))
+        output[[pid]] <- renderPlot(tech_subchart_funs[[nm]](df))
+        column(width = 6, plotOutput(pid, height = "300px"))
+      }))
+    })
+  })
+  
+  output$breadth_ui <- renderUI({
+    b <- calc_market_breadth(data()) %>% slice_tail(n = 250)
+    lapply(names(breadth_chart_funs), function(nm) {
+      pid <- paste0("breadth_", make.names(nm))
+      output[[pid]] <- renderPlot(breadth_chart_funs[[nm]](b))
+      fluidRow(column(width = 12, plotOutput(pid, height = "300px")))
+    })
+  })
   
   # ----------------------------------------------------------
   # 回撤圖
