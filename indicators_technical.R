@@ -1,19 +1,19 @@
 # ============================================================
-# indicators_technical.R：技術指標計算（修正版）
+# indicators_technical.R：技術指標計算（最終完整版）
 # ============================================================
 library(TTR)
+library(tidyr) # 用於填補市場廣度指標的 NA
 
 calc_technical_one <- function(df) {
   df <- df[order(df$date), ]
-  # 清除缺價列，避免「中間 NA」導致 TTR 滾動函數報錯
   df <- df[!is.na(df$open) & !is.na(df$high) & !is.na(df$low) &
              !is.na(df$close) & is.finite(df$close), ]
   n <- nrow(df)
   if (n == 0) return(df)
+  
   close <- df$close; high <- df$high; low <- df$low
   vol <- df$volume; vol[is.na(vol)] <- 0
   chg <- c(NA_real_, diff(close))
-  # TTR 的 HLC 型函數需要「單一三欄物件」
   hlc <- cbind(high = high, low = low, close = close)
   
   ## 移動平均線 MA
@@ -32,10 +32,10 @@ calc_technical_one <- function(df) {
   ## OBV
   df$OBV <- OBV(close, vol)
   
-  ## RSI（Wilder 法）
+  ## RSI
   df$RSI14 <- RSI(close, 14)
   
-  ## KD（台股遞迴定義：K=(2*前K+RSV)/3, D=(2*前D+K)/3）
+  ## KD（手動台股遞迴定義，避開 stoch 函數）
   ll <- runMin(low, 9); hh <- runMax(high, 9)
   rsv <- (close - ll) / (hh - ll) * 100
   rsv[!is.finite(rsv)] <- 50
@@ -49,61 +49,45 @@ calc_technical_one <- function(df) {
   }
   df$K <- K; df$D <- D
   
-  ## MACD（DIF / DEA / OSC）
-  ## 注意：TTR 對向量輸入回傳矩陣，必須用 [, "欄名"] 取值，不能用 $
+  ## MACD（使用矩陣索引取值）
   mc <- MACD(close, 12, 26, 9)
   df$DIF <- as.numeric(mc[, "macd"])
   df$DEA <- as.numeric(mc[, "signal"])
   df$OSC <- (df$DIF - df$DEA) * 2
   
-  ## DMI（Wilder 平滑手動實作，不依賴 TTR 是否匯出 DMI）
+  ## DMI（手動 Wilder 實作）
   prev_close <- c(NA_real_, close[-n])
   up_move    <- c(NA_real_, diff(high))
   down_move  <- c(NA_real_, -diff(low))
-  
-  ## +DM / -DM
   plusDM  <- ifelse(up_move > down_move & up_move > 0, up_move, 0)
   minusDM <- ifelse(down_move > up_move & down_move > 0, down_move, 0)
-  plusDM[1]  <- 0
-  minusDM[1] <- 0
-  
-  ## 真實波動幅度 TR
-  tr <- pmax(high - low,
-             abs(high - prev_close),
-             abs(low  - prev_close))
+  plusDM[1]  <- 0; minusDM[1] <- 0
+  tr <- pmax(high - low, abs(high - prev_close), abs(low  - prev_close))
   tr[1] <- NA_real_
-  
-  ## Wilder 平滑（等於 alpha = 1/14 的 EMA）
   wilder <- function(x) EMA(x, n = 14, wilder = TRUE)
   tr_s   <- wilder(tr)
-  
   plusDI  <- 100 * wilder(plusDM)  / tr_s
   minusDI <- 100 * wilder(minusDM) / tr_s
   plusDI  <- ifelse(is.finite(plusDI),  plusDI,  NA_real_)
   minusDI <- ifelse(is.finite(minusDI), minusDI, NA_real_)
-  
-  ## DX 與 ADX
   dx <- 100 * abs(plusDI - minusDI) / (plusDI + minusDI)
   dx <- ifelse(is.finite(dx), dx, NA_real_)
-  
   df$PLUS_DI  <- plusDI
   df$MINUS_DI <- minusDI
   df$ADX      <- EMA(dx, n = 14, wilder = TRUE)
   
-  ## 威廉指標 WMS%R（手動計算，不依賴 TTR 匯出名稱）
+  ## WMS%R（手動計算）
   hh14 <- runMax(high, 14)
   ll14 <- runMin(low, 14)
   denom <- hh14 - ll14
-  df$WMSR <- ifelse(denom > 0,
-                    -100 * (hh14 - close) / denom,
-                    NA_real_)
+  df$WMSR <- ifelse(denom > 0, -100 * (hh14 - close) / denom, NA_real_)
   
-  ## 心理線 PSY（首日無漲跌，以 0 計，避免 NA）
+  ## PSY
   upday <- ifelse(chg > 0, 1, 0)
   upday[1] <- 0
   df$PSY12 <- runSum(upday, 12) / 12 * 100
   
-  ## 量強弱 VR（26 日）
+  ## VR
   vA <- ifelse(chg > 0, vol, 0); vB <- ifelse(chg < 0, vol, 0)
   vC <- ifelse(chg == 0, vol, 0)
   vA[1] <- 0; vB[1] <- 0; vC[1] <- 0
@@ -134,9 +118,12 @@ calc_market_breadth <- function(data) {
     group_by(date) %>%
     summarise(adv = sum(chg > 0), dec = sum(chg < 0), .groups = "drop") %>%
     arrange(date)
+  
   daily$ADR <- ifelse(daily$dec > 0, daily$adv / daily$dec * 100, NA_real_)
-  # 將「下跌家數為 0」造成的間斷 NA 向下填補，避免 TTR 報錯
+  
+  # 關鍵修正：將中間的 NA 向下填補，避免 runMean 報錯
   daily <- tidyr::fill(daily, ADR, .direction = "down")
+  
   daily$ADR10  <- runMean(daily$ADR, 10)
   daily$ADL    <- cumsum(daily$adv - daily$dec)
   daily$OBOS10 <- runSum(daily$adv - daily$dec, 10)
@@ -144,7 +131,7 @@ calc_market_breadth <- function(data) {
 }
 
 # ------------------------------------------------------------
-# K 線主圖
+# K 線主圖與副圖函數庫 (保持原樣)
 # ------------------------------------------------------------
 plot_candlestick <- function(df, ma_cols = c("MA5", "MA20", "MA60")) {
   ma_palette <- c(MA5 = "#1976d2", MA10 = "#f57c00", MA20 = "#7b1fa2",
@@ -168,9 +155,6 @@ plot_candlestick <- function(df, ma_cols = c("MA5", "MA20", "MA60")) {
           axis.text.x = element_text(angle = 45, hjust = 1))
 }
 
-# ------------------------------------------------------------
-# 副圖函數庫
-# ------------------------------------------------------------
 tech_subchart_funs <- list(
   "成交量 VOL" = function(df) {
     ggplot(df, aes(x = date, y = volume)) +
@@ -245,9 +229,6 @@ tech_subchart_funs <- list(
   }
 )
 
-# ------------------------------------------------------------
-# 市場廣度副圖
-# ------------------------------------------------------------
 breadth_chart_funs <- list(
   "ADR（10 日均線）" = function(b) {
     ggplot(b, aes(x = date, y = ADR10)) + geom_line(color = "#1976d2", linewidth = 0.8) +

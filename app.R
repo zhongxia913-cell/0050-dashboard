@@ -8,7 +8,8 @@ library(ggplot2)
 library(dplyr)
 library(tidyr)
 source("indicators_technical.R", local = TRUE)
-
+source("indicators_financial.R", local = TRUE)
+source("score_model.R", local = TRUE)          
 
 options(scipen = 999)
 # ============================================================
@@ -1445,7 +1446,56 @@ ui <- fluidPage(
       
     ),
     
+    # ========================================================
+    # 財務分析
+    # ========================================================
+    tabPanel(
+      "財務分析",
+      div(
+        class = "section-box",
+        h2("財務分析"),
+        p(class = "page-description", "資料來源為 Yahoo Finance 財務模組。最多選 5 檔進行比較。（0050 為 ETF，無財報數據）"),
+        div(class = "data-status", p(strong("財務資料更新時間："), textOutput("fin_updated_at", inline = TRUE))),
+        selectizeInput("fin_stock", "請選擇股票（最多 5 檔）：",
+                       choices = dashboard_stock_choices, selected = c("2330", "2454"),
+                       multiple = TRUE, options = list(maxItems = MAX_SELECTED_STOCKS, plugins = list("remove_button"))),
+        h3("財務比率比較表"),
+        tableOutput("fin_compare_table"),
+        hr(),
+        h3("單一比率長條圖比較"),
+        selectInput("fin_bar_ratio", "選擇比率：",
+                    choices = setNames(ratio_meta$key, ratio_meta$name), selected = "roe"),
+        plotOutput("fin_bar_chart", height = "400px")
+      )
+    ),
     
+    # ========================================================
+    # 投資建議
+    # ========================================================
+    tabPanel(
+      "投資建議",
+      div(
+        class = "section-box",
+        h2("投資建議評分"),
+        p(class = "page-description", "綜合技術面與基本面評分，產生透明可解釋的參考評級。"),
+        div(class = "warning-note", strong("重要聲明："), "本模組為教學與研究用途，輸出僅為量化規則之機械化結果，不構成任何投資建議。"),
+        sliderInput("adv_w_tech", "技術面權重（%）：", min = 0, max = 100, value = 50, step = 5),
+        selectizeInput("adv_stock", "請選擇股票（最多 5 檔）：",
+                       choices = dashboard_stock_choices, selected = c("2330", "2454"),
+                       multiple = TRUE, options = list(maxItems = MAX_SELECTED_STOCKS, plugins = list("remove_button"))),
+        actionButton("adv_scan_all", "掃描全部成分股（耗時較長）", class = "btn-primary"),
+        hr(),
+        h3("自選股評分結果"),
+        tableOutput("adv_table"),
+        plotOutput("adv_bar_chart", height = "400px"),
+        h3("觸發訊號明細"),
+        uiOutput("adv_signals_ui"),
+        hr(),
+        h3("全成分股掃描結果"),
+        tableOutput("adv_scan_table")
+      )
+    ),
+        
     # ========================================================
     # 5. 相關性分析
     # ========================================================
@@ -3885,45 +3935,6 @@ server <- function(input, output, session) {
   hover = TRUE
   )
   
-  # ==========================================================
-  # 5.5 技術指標 K 線 (Server)
-  # ==========================================================
-  tech_full <- reactive({
-    d <- data() %>% filter(symbol == input$tech_stock)
-    req(nrow(d) > 60)
-    calc_technical_one(d)
-  })
-  
-  tech_view <- reactive({
-    slice_tail(tech_full(), n = input$tech_days)
-  })
-  
-  output$tech_main_chart <- renderPlot({
-    plot_candlestick(tech_view(), input$tech_mas)
-  })
-  
-  output$tech_sub_ui <- renderUI({
-    sel <- input$tech_subs
-    req(length(sel) > 0)
-    df <- tech_view()
-    lapply(seq(1, length(sel), by = 2), function(i) {
-      ids <- sel[i:min(i + 1, length(sel))]
-      fluidRow(lapply(ids, function(nm) {
-        pid <- paste0("tech_sub_", make.names(nm))
-        output[[pid]] <- renderPlot(tech_subchart_funs[[nm]](df))
-        column(width = 6, plotOutput(pid, height = "300px"))
-      }))
-    })
-  })
-  
-  output$breadth_ui <- renderUI({
-    b <- calc_market_breadth(data()) %>% slice_tail(n = 250)
-    lapply(names(breadth_chart_funs), function(nm) {
-      pid <- paste0("breadth_", make.names(nm))
-      output[[pid]] <- renderPlot(breadth_chart_funs[[nm]](b))
-      fluidRow(column(width = 12, plotOutput(pid, height = "300px")))
-    })
-  })
   
   # ----------------------------------------------------------
   # 回撤圖
@@ -4180,7 +4191,45 @@ server <- function(input, output, session) {
     
   })
   
+  # ==========================================================
+  # 5.5 技術指標 K 線 (Server)
+  # ==========================================================
+  tech_full <- reactive({
+    d <- data() %>% filter(symbol == input$tech_stock)
+    req(nrow(d) > 60)
+    calc_technical_one(d)
+  })
   
+  tech_view <- reactive({
+    slice_tail(tech_full(), n = input$tech_days)
+  })
+  
+  output$tech_main_chart <- renderPlot({
+    plot_candlestick(tech_view(), input$tech_mas)
+  })
+  
+  output$tech_sub_ui <- renderUI({
+    sel <- input$tech_subs
+    req(length(sel) > 0)
+    df <- tech_view()
+    lapply(seq(1, length(sel), by = 2), function(i) {
+      ids <- sel[i:min(i + 1, length(sel))]
+      fluidRow(lapply(ids, function(nm) {
+        pid <- paste0("tech_sub_", make.names(nm))
+        output[[pid]] <- renderPlot(tech_subchart_funs[[nm]](df))
+        column(width = 6, plotOutput(pid, height = "300px"))
+      }))
+    })
+  })
+  
+  output$breadth_ui <- renderUI({
+    b <- calc_market_breadth(data()) %>% slice_tail(n = 250)
+    lapply(names(breadth_chart_funs), function(nm) {
+      pid <- paste0("breadth_", make.names(nm))
+      output[[pid]] <- renderPlot(breadth_chart_funs[[nm]](b))
+      fluidRow(column(width = 12, plotOutput(pid, height = "300px")))
+    })
+  })
   
   # ==========================================================
   # 6. 產業比較
@@ -4934,8 +4983,161 @@ server <- function(input, output, session) {
       )
     
   })
+
+  # ==========================================================
+  # 6.5 財務分析
+  # ==========================================================
   
+  fin_raw <- reactivePoll(
+    intervalMillis = 600000, session = session,
+    checkFunc = function() {
+      if (file.exists("data/financial_data.rds")) file.info("data/financial_data.rds")$mtime else NULL
+    },
+    valueFunc = function() readRDS("data/financial_data.rds")
+  )
   
+  output$fin_updated_at <- renderText({
+    req(file.exists("data/financial_data.rds"))
+    fin_raw()$updated_at
+  })
+  
+  fin_symbols <- reactive({
+    s <- setdiff(input$fin_stock, "0050")
+    req(length(s) > 0)
+    head(s, MAX_SELECTED_STOCKS)
+  })
+  
+  fin_ratio_matrix <- reactive({
+    fd <- fin_raw()
+    req(!is.null(fd$stocks))
+    res <- lapply(fin_symbols(), function(code) {
+      st <- fd$stocks[[code]]
+      if (is.null(st)) return(NULL)
+      r <- compute_fin_ratios(st)
+      data.frame(key = names(r), value = as.numeric(r), symbol = code, stringsAsFactors = FALSE)
+    })
+    out <- bind_rows(res)
+    # 防護機制：若無資料，回傳帶有正確欄位名稱的空資料框，避免 filter 報錯
+    if (nrow(out) == 0) {
+      return(data.frame(key = character(), value = numeric(), symbol = character(), stringsAsFactors = FALSE))
+    }
+    out
+  })
+  
+  output$fin_compare_table <- renderTable({
+    m <- fin_ratio_matrix()
+    req(nrow(m) > 0)
+    wide <- m %>%
+      mutate(label = paste0(get_stock_name(symbol), " (", symbol, ")")) %>%
+      select(key, label, value) %>%
+      tidyr::pivot_wider(names_from = label, values_from = value)
+    meta <- ratio_meta %>% select(key, name, unit, group)
+    out <- meta %>% dplyr::left_join(wide, by = "key")
+    num_cols <- setdiff(names(out), c("key", "name", "unit", "group"))
+    out %>% mutate(across(all_of(num_cols), ~ ifelse(is.finite(.), sprintf("%.1f", .), "NA"))) %>%
+      select(group, name, unit, all_of(num_cols))
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
+  output$fin_bar_chart <- renderPlot({
+    m <- fin_ratio_matrix() %>% filter(key == input$fin_bar_ratio)
+    req(nrow(m) > 0)
+    m <- m %>% mutate(label = paste0(symbol, " ", get_stock_name(symbol)))
+    ggplot(m, aes(x = reorder(label, value), y = value, fill = label)) +
+      geom_col(width = 0.6) + scale_fill_discrete(guide = "none") +
+      labs(title = paste0(ratio_meta$name[match(input$fin_bar_ratio, ratio_meta$key)], " 比較"),
+           x = NULL, y = ratio_meta$unit[match(input$fin_bar_ratio, ratio_meta$key)]) +
+      theme_minimal() + theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  })
+  
+  # ==========================================================
+  # 6.6 投資建議
+  # ==========================================================
+  
+  adv_scores <- reactive({
+    req(input$adv_stock)
+    fd <- fin_raw()
+    req(!is.null(fd$stocks))
+    w <- input$adv_w_tech / 100
+    
+    res <- lapply(setdiff(input$adv_stock, "0050"), function(code) {
+      d <- data() %>% filter(symbol == code)
+      st <- fd$stocks[[code]]
+      if (nrow(d) < 60 || is.null(st)) return(NULL)
+      t <- score_technical(calc_technical_one(d))
+      f <- score_fundamental(st)
+      total <- w * t$score + (1 - w) * f$score
+      data.frame(股票代號 = code, 股票名稱 = get_stock_name(code),
+                 技術分 = round(t$score, 1), 財務分 = round(f$score, 1),
+                 綜合分 = round(total, 1), 評級 = rating_label(total), stringsAsFactors = FALSE)
+    })
+    
+    out <- bind_rows(res)
+    if (nrow(out) == 0) return(NULL)
+    out
+  })
+  
+  output$adv_table <- renderTable({ 
+    req(adv_scores())
+    adv_scores() 
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
+  output$adv_bar_chart <- renderPlot({
+    x <- adv_scores()
+    req(!is.null(x) && nrow(x) > 0)
+    ggplot(x, aes(x = reorder(股票名稱, 綜合分), y = 綜合分, fill = 評級)) +
+      geom_col(width = 0.6) +
+      scale_fill_manual(values = c("買進" = "#c23b33", "加碼" = "#e57373", "持有" = "#90a4ae", "減碼" = "#66bb6a", "觀望迴避" = "#2e7d32")) +
+      geom_hline(yintercept = c(30, 45, 55, 70), linetype = "dotted", color = "gray60") +
+      labs(title = "綜合評分", x = NULL, y = "分數") +
+      theme_minimal() + theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  })
+  
+  output$adv_signals_ui <- renderUI({
+    req(input$adv_stock)
+    lapply(setdiff(input$adv_stock, "0050"), function(code) {
+      d <- data() %>% filter(symbol == code)
+      if (nrow(d) < 60) return(NULL)
+      sig <- tech_signals(calc_technical_one(d))
+      
+      tags$div(
+        tags$h4(get_stock_label(code)),
+        if (nrow(sig) == 0) {
+          tags$p("近期無技術訊號觸發。")
+        } else {
+          tags$ul(lapply(seq_len(nrow(sig)), function(i) {
+            tags$li(tags$span(
+              tags$strong(ifelse(sig$type[i] == "buy", "【買方訊號】", "【賣方訊號】")),
+              paste0(" ", sig$indicator[i], "：", sig$text[i])
+            ))
+          }))
+        }
+      )
+    })
+  })
+  
+  adv_scan_result <- eventReactive(input$adv_scan_all, {
+    fd <- fin_raw()
+    req(!is.null(fd$stocks))
+    w <- input$adv_w_tech / 100
+    res <- lapply(names(fd$stocks), function(code) {
+      d <- data() %>% filter(symbol == code)
+      if (nrow(d) < 60) return(NULL)
+      t <- score_technical(calc_technical_one(d))
+      f <- score_fundamental(fd$stocks[[code]])
+      total <- w * t$score + (1 - w) * f$score
+      data.frame(股票代號 = code, 股票名稱 = get_stock_name(code),
+                 技術分 = round(t$score, 1), 財務分 = round(f$score, 1),
+                 綜合分 = round(total, 1), 評級 = rating_label(total), stringsAsFactors = FALSE)
+    })
+    out <- bind_rows(res)
+    if (nrow(out) == 0) return(NULL)
+    out %>% arrange(desc(綜合分))
+  })
+  
+  output$adv_scan_table <- renderTable({ 
+    req(adv_scan_result())
+    adv_scan_result() 
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
   # ==========================================================
   # 7. 相關性分析
   # ==========================================================
