@@ -5,7 +5,9 @@
 # ---------- 1. 四面向標籤 ----------
 lab_fin  <- function(s) ifelse(s >= 60, "良好", ifelse(s >= 40, "普通", "偏弱"))
 lab_tech <- function(s) ifelse(s >= 60, "偏多", ifelse(s >= 40, "中立", "偏空"))
-lab_val  <- function(pe, pb) {
+lab_val <- function(pe, pb) {
+  pe <- pe[1]
+  pb <- pb[1]
   if (!is.finite(pe) || pe <= 0) return("無資料")
   if (!is.finite(pb)) pb <- 99
   ifelse(pe <= 15 & pb < 2, "偏低",
@@ -34,6 +36,7 @@ one_liner <- function(fin_l, tech_l, risk_l) {
 make_reasons <- function(tech_last, ratios, peer_avg) {
   sup <- character(); cau <- character()
   add <- function(ok, txt_sup, txt_cau = NULL) {
+    ok <- ok[1]
     if (isTRUE(ok)) sup <<- c(sup, txt_sup)
     else if (!is.null(txt_cau) && !is.na(ok)) cau <<- c(cau, txt_cau)
   }

@@ -50,15 +50,16 @@ safe_num <- function(x) {
   if (is.list(x)) x <- x$raw
   if (is.null(x) || length(x) == 0) return(NA_real_)
   x <- suppressWarnings(as.numeric(x))
-  if (length(x) == 0 || !is.finite(x)) NA_real_ else x
+  if (length(x) == 0 || any(!is.finite(x))) NA_real_ else x[1]
 }
 
 fetch_one_stock <- function(code, crumb) {
   sym <- paste0(code, ".TW")
   url <- paste0(
     "https://query1.finance.yahoo.com/v10/finance/quoteSummary/", sym,
-    "?modules=financialData,defaultKeyStatistics,summaryDetail,",
-    "balanceSheetHistory,incomeStatementHistory,cashflowStatementHistory",
+    "?modules=defaultKeyStatistics,summaryDetail,",
+    "balanceSheetHistory,balanceSheetHistoryQuarterly,",
+    "incomeStatementHistory,cashflowStatementHistory",
     "&crumb=", utils::URLencode(crumb, reserved = TRUE)
   )
   j <- request(url) %>%
@@ -71,6 +72,10 @@ fetch_one_stock <- function(code, crumb) {
   
   q   <- j$quoteSummary$result[[1]]
   bs  <- q$balanceSheetHistory$balanceSheetStatements[[1]]
+  # 年度資產負債表缺失時（金融業常見），改用最近一季資產負債表
+  if (is.null(bs) || is.null(bs$totalAssets)) {
+    bs <- q$balanceSheetHistoryQuarterly$balanceSheetStatements[[1]]
+  }
   ic  <- q$incomeStatementHistory$incomeStatementHistory[[1]]
   cf  <- q$cashflowStatementHistory$cashflowStatements[[1]]
   ks  <- q$defaultKeyStatistics

@@ -18,8 +18,8 @@ tech_signals <- function(df) {
   if (any(cross_up(df$MA20, df$MA5)[win], na.rm = TRUE)) add("MA", "sell", "死亡交叉（MA5 下穿 MA20）")
   if (any(cross_up(df$K, df$D)[win] & df$K[win] < 20, na.rm = TRUE)) add("KD", "buy", "20 以下 K 上穿 D")
   if (any(cross_up(df$D, df$K)[win] & df$K[win] > 80, na.rm = TRUE)) add("KD", "sell", "80 以上 K 下穿 D")
-  if (!is.na(df$RSI14[n]) && df$RSI14[n] < 30) add("RSI", "buy", "RSI 低於 30（超賣）")
-  if (!is.na(df$RSI14[n]) && df$RSI14[n] > 70) add("RSI", "sell", "RSI 高於 70（超買）")
+  if (length(df$RSI14) >= n && !is.na(df$RSI14[n]) && df$RSI14[n] < 30) add("RSI", "buy", "RSI 低於 30（超賣）")
+  if (length(df$RSI14) >= n && !is.na(df$RSI14[n]) && df$RSI14[n] > 70) add("RSI", "sell", "RSI 高於 70（超買）")
   if (any(cross_up(df$DIF, df$DEA)[win], na.rm = TRUE)) add("MACD", "buy", "DIF 上穿 DEA")
   if (any(cross_up(df$DEA, df$DIF)[win], na.rm = TRUE)) add("MACD", "sell", "DIF 下穿 DEA")
   sig
@@ -46,8 +46,8 @@ score_technical <- function(df) {
   list(score = max(0, min(100, pts / 60 * 100)), notes = notes)
 }
 
-score_fundamental <- function(l) {
-  r <- compute_fin_ratios(l)
+score_fundamental <- function(l, symbol = NULL) {
+  r <- compute_fin_ratios(l, symbol)
   pts <- 0; notes <- character()
   cr <- r["current_ratio"]; dr <- r["debt_ratio"]
   if (!is.na(cr)) { if (cr >= 150) { pts <- pts + 10; notes <- c(notes, "流動比率優良") } else if (cr >= 100) pts <- pts + 6 }

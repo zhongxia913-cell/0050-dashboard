@@ -1,28 +1,41 @@
 # ============================================================
 # indicators_financial.R：財務比率計算與中繼資料
 # ============================================================
+
 safe_div <- function(a, b) {
   if (length(a) == 0 || length(b) == 0) return(NA_real_)
   a <- as.numeric(a); b <- as.numeric(b)
-  if (!is.finite(a) || !is.finite(b) || b == 0) NA_real_ else a / b
+  # 【徹底修正】使用 any() 確保 || 兩側為長度 1
+  if (any(!is.finite(a)) || any(!is.finite(b)) || any(b == 0)) {
+    return(NA_real_)
+  }
+  a[1] / b[1]
 }
 
-compute_fin_ratios <- function(l) {
+compute_fin_ratios <- function(l, symbol = NULL) {
   pick <- function(...) {
     vals <- c(...)
     vals <- vals[is.finite(vals)]
     if (length(vals) > 0) vals[1] else NA_real_
   }
+  num1 <- function(x) {
+    x <- as.numeric(x)
+    if (length(x) == 0) NA_real_ else x[1]
+  }
+  
   ## 由負債權益比反推負債比率 / 權益比率
-  de <- l$fd_debt_equity
+  de <- num1(l$fd_debt_equity)
   debt_fb <- if (is.finite(de)) (de / 100) / (1 + de / 100) * 100 else NA_real_
   equity_fb <- if (is.finite(debt_fb)) 100 - debt_fb else NA_real_
+  
   ## 由 P/B 與 ROE 反推本益比：PE = PB / ROE
-  pe_fb <- if (is.finite(l$pb) && is.finite(l$fd_roe) && l$fd_roe > 0) {
-    l$pb / (l$fd_roe / 100)
+  pb_v <- num1(l$priceToBook)
+  roe_v <- num1(l$fd_roe)
+  pe_fb <- if (is.finite(pb_v) && is.finite(roe_v) && roe_v > 0) {
+    pb_v / (roe_v / 100)
   } else NA_real_
   
-  c(
+  out <- c(
     current_ratio  = pick(l$fd_current_ratio,
                           safe_div(l$totalCurrentAssets, l$totalCurrentLiabilities) * 100),
     quick_ratio    = pick(l$fd_quick_ratio,
@@ -48,6 +61,15 @@ compute_fin_ratios <- function(l) {
     equity_growth  = pick(l$equity_growth, l$fd_earnings_growth),
     revenue_growth = pick(l$revenue_growth, l$fd_revenue_growth)
   )
+  
+  # 金融保險業：流動比率、速動比率、毛利率不適用（產業慣例）
+  if (!is.null(symbol) &&
+      identical(get_stock_industry_one(symbol), "金融保險")) {
+    out["current_ratio"] <- NA_real_
+    out["quick_ratio"]   <- NA_real_
+    out["gross_margin"]  <- NA_real_
+  }
+  out
 }
 
 ratio_meta <- data.frame(

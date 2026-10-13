@@ -11,6 +11,7 @@ source("indicators_technical.R", local = TRUE)
 source("indicators_financial.R", local = TRUE)
 source("score_model.R", local = TRUE)
 source("summary_model.R", local = TRUE)
+source("build_backtest.R", local = TRUE)
 
 options(scipen = 999)
 # ============================================================
@@ -118,10 +119,7 @@ get_stock_name_one <- function(symbol) {
   
   symbol <- as.character(symbol)
   
-  if (
-    length(symbol) == 0 ||
-    is.na(symbol)
-  ) {
+  if (length(symbol) == 0 || anyNA(symbol)) {
     return(NA_character_)
   }
   
@@ -138,7 +136,7 @@ get_stock_name_one <- function(symbol) {
   
   if (
     length(result) == 0 ||
-    is.na(result)
+    anyNA(result)
   ) {
     return(symbol)
   }
@@ -162,10 +160,7 @@ get_stock_industry_one <- function(symbol) {
   
   symbol <- as.character(symbol)
   
-  if (
-    length(symbol) == 0 ||
-    is.na(symbol)
-  ) {
+  if (length(symbol) == 0 || anyNA(symbol)) {
     return(NA_character_)
   }
   
@@ -182,7 +177,7 @@ get_stock_industry_one <- function(symbol) {
   
   if (
     length(result) == 0 ||
-    is.na(result)
+    anyNA(result)
   ) {
     return("其他")
   }
@@ -313,7 +308,9 @@ annualized_return <- function(
     end_value,
     trading_days
 ) {
-  
+  start_value <- start_value[1]
+  end_value <- end_value[1]
+  trading_days <- trading_days[1]
   if (
     !is.finite(start_value) ||
     !is.finite(end_value) ||
@@ -352,10 +349,7 @@ nearest_date <- function(
   dates <- sort(unique(as.Date(dates)))
   target <- as.Date(target)
   
-  if (
-    length(dates) == 0 ||
-    is.na(target)
-  ) {
+  if (length(dates) == 0 || anyNA(target)) {
     return(NA)
   }
   
@@ -1482,6 +1476,24 @@ ui <- fluidPage(
     # ========================================================
     # 投資建議
     # ========================================================
+    
+    tabPanel(
+      "快速選股",
+      div(class = "section-box",
+          h2("快速選股"),
+          p(class = "page-description",
+            "先說需求，系統從 50 檔成分股中找出最符合的股票。"),
+          radioButtons("screen_style", "我想找：",
+                       choices = c("穩健型", "成長型", "低波動型", "技術偏多型"),
+                       selected = "穩健型", inline = TRUE),
+          checkboxGroupInput("screen_criteria", "附加條件（可複選）：",
+                             choices = c("財務面良好", "技術面偏多", "低波動",
+                                         "高 Sharpe Ratio", "近期報酬佳", "最大回撤較低"),
+                             inline = TRUE),
+          hr(), h3("篩選結果"),
+          tableOutput("screen_table"))
+    ),
+
     tabPanel(
       "投資建議",
       div(
@@ -1502,10 +1514,18 @@ ui <- fluidPage(
         uiOutput("adv_signals_ui"),
         hr(),
         h3("全成分股掃描結果"),
-        tableOutput("adv_scan_table")
+        tableOutput("adv_scan_table"),
+        hr(), h3("投資建議歷史驗證"),
+        div(class = "warning-note",
+            "回測僅使用技術面規則（財務資料無歷史序列）；以現行成分股回推，存在生存者偏差；規則於回測前固定，未依結果調整。"),
+        h4("訊號歷史表現"),
+        tableOutput("bt_summary_table"),
+        h4("策略 vs Benchmark"),
+        tableOutput("bt_benchmark_table"),
+        plotOutput("bt_curve", height = "450px"),
       )
     ),
-        
+
     # ========================================================
     # 5. 相關性分析
     # ========================================================
@@ -1720,7 +1740,9 @@ ui <- fluidPage(
           "portfolio_benchmark_chart",
           height = "550px"
         ),
-        
+        uiOutput(
+          "portfolio_diversification_ui"
+        ),
         div(
           class = "plot-explanation",
           strong("怎麼看？ "),
@@ -1756,10 +1778,9 @@ ui <- fluidPage(
   ),
   
   
-  div(
-    class = "dashboard-footer",
-    "0050 投資組合研究 Dashboard"
-  )
+  div(class = "dashboard-footer",
+      "0050 投資組合研究 Dashboard｜本系統分析結果僅供學術研究與教學用途，不構成任何實際投資建議。投資具有風險，使用者仍應自行判斷。"
+      )
 )
 
 
@@ -2731,7 +2752,145 @@ server <- function(input, output, session) {
       )
     
   })
+
+  # ==========================================================
+  # 5.1 懶人總覽與比較基準
+  # ==========================================================
+  lazy_data <- reactive({
+    sym <- analysis_symbols()[1]           
+    req(sym, sym != "0050")
+    r <- analysis_range()
+    d <- data() %>% filter(symbol == sym)
+    req(nrow(d) >= 60)
+    
+    tech_all <- calc_technical_one(d)
+    tech_last <- tech_all[nrow(tech_all), ]
+    
+    fd <- fin_raw()
+    st <- fd$stocks[[sym]]
+    ratios <- if (!is.null(st)) compute_fin_ratios(st) else rep(NA_real_, 18)
+    
+    cs <- cross_section_stats(data(), r[1], r[2])
+    cs_row <- cs %>% filter(symbol == sym)
+    
+    f_sc <- if (!is.null(st)) score_fundamental(st)$score else NA_real_
+    t_sc <- score_technical(tech_all)$score
+    
+    risk <- lab_risk(cs_row$ann_vol, cs$ann_vol)
+    
+    ind <- get_stock_industry(sym)
+    cs_ind <- cs %>% filter(get_stock_industry(symbol) == ind)
+    
+    peer_avg <- list(roe = mean(vapply(fd$stocks, function(s) compute_fin_ratios(s)["roe"], numeric(1)), na.rm = TRUE),
+                     ann_vol = mean(cs$ann_vol, na.rm = TRUE))
+    reasons <- make_reasons(
+      list(close = tech_last$close, MA20 = tech_last$MA20,
+           DIF = tech_last$DIF, DEA = tech_last$DEA, RSI14 = tech_last$RSI14,
+           ann_vol = cs_row$ann_vol),
+      ratios, peer_avg)
+    
+    mc <- market_correlations(data(), sym, r[1], r[2])
+    
+    list(sym = sym, ratios = ratios, f_sc = f_sc, t_sc = t_sc,
+         fin_l = lab_fin(f_sc), tech_l = lab_tech(t_sc),
+         risk_l = risk$label, val_l = lab_val(ratios["pe"], ratios["pb"]),
+         cs = cs, cs_row = cs_row, cs_ind = cs_ind, ind = ind,
+         reasons = reasons, mc = mc)
+  })
   
+  output$lazy_overview_ui <- renderUI({
+    L <- lazy_data()
+    total <- round(mean(c(L$f_sc, L$t_sc), na.rm = TRUE))
+    tagList(
+      div(class = "section-box",
+          h3(paste0(get_stock_label(L$sym), "｜快速總覽")),
+          fluidRow(
+            column(3, div(class = "info-card", div(class = "info-card-title", "綜合評分"), h3(class = "info-card-value", total))),
+            column(3, div(class = "info-card", div(class = "info-card-title", "財務面"), h3(class = "info-card-value", L$fin_l))),
+            column(3, div(class = "info-card", div(class = "info-card-title", "技術面"), h3(class = "info-card-value", L$tech_l))),
+            column(3, div(class = "info-card", div(class = "info-card-title", "風險面 / 估值面"), h3(class = "info-card-value", paste0(L$risk_l, " / ", L$val_l))))
+          ),
+          div(class = "reading-guide", strong("一句話："), one_liner(L$fin_l, L$tech_l, L$risk_l)),
+          fluidRow(
+            column(6, h4("支持原因"), tags$ul(lapply(L$reasons$support, function(x) tags$li("✓ ", x)))),
+            column(6, h4("需要注意"), tags$ul(lapply(L$reasons$caution, function(x) tags$li("△ ", x))))
+          )
+      ),
+      uiOutput("peer_compare_ui"),
+      uiOutput("market_cor_ui")
+    )
+  })
+  
+  # --- 0050 與同產業比較表格 ---
+  output$peer_tbl_0050 <- renderTable({
+    L <- lazy_data()
+    cs_avg <- list(ann_ret = mean(L$cs$ann_ret, na.rm = TRUE), ann_vol = mean(L$cs$ann_vol, na.rm = TRUE), sharpe = mean(L$cs$sharpe, na.rm = TRUE))
+    mk_row <- function(name, v, avg, hb, unit = "%") {
+      data.frame(指標 = name,
+                 個股 = ifelse(is.finite(v), sprintf("%.1f%s", v * ifelse(unit=="%",100,1), unit), "NA"),
+                 平均 = ifelse(is.finite(avg), sprintf("%.1f%s", avg * ifelse(unit=="%",100,1), unit), "NA"),
+                 評價 = eval_text(v, avg, hb))
+    }
+    rbind(
+      mk_row("年化報酬率", L$cs_row$ann_ret, cs_avg$ann_ret, TRUE),
+      mk_row("年化波動度", L$cs_row$ann_vol, cs_avg$ann_vol, FALSE),
+      mk_row("Sharpe Ratio", L$cs_row$sharpe, cs_avg$sharpe, TRUE, unit = ""),
+      mk_row("ROE", L$ratios["roe"] / 100, mean(vapply(fin_raw()$stocks, function(s) compute_fin_ratios(s)["roe"], numeric(1)), na.rm = TRUE) / 100, TRUE)
+    )
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
+  output$peer_tbl_ind <- renderTable({
+    L <- lazy_data()
+    ind_avg <- list(ann_ret = mean(L$cs_ind$ann_ret, na.rm = TRUE), ann_vol = mean(L$cs_ind$ann_vol, na.rm = TRUE), sharpe = mean(L$cs_ind$sharpe, na.rm = TRUE))
+    mk_row <- function(name, v, avg, hb, unit = "%") {
+      data.frame(指標 = name,
+                 個股 = ifelse(is.finite(v), sprintf("%.1f%s", v * ifelse(unit=="%",100,1), unit), "NA"),
+                 平均 = ifelse(is.finite(avg), sprintf("%.1f%s", avg * ifelse(unit=="%",100,1), unit), "NA"),
+                 評價 = eval_text(v, avg, hb))
+    }
+    rbind(
+      mk_row("年化報酬率", L$cs_row$ann_ret, ind_avg$ann_ret, TRUE),
+      mk_row("年化波動度", L$cs_row$ann_vol, ind_avg$ann_vol, FALSE),
+      mk_row("Sharpe Ratio", L$cs_row$sharpe, ind_avg$sharpe, TRUE, unit = "")
+    )
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
+  output$peer_compare_ui <- renderUI({
+    L <- lazy_data()
+    tagList(
+      div(class = "section-box",
+          h3("個股 vs 0050 成分股平均"),
+          tableOutput("peer_tbl_0050"),
+          div(class = "plot-explanation", strong("排名／百分位："),
+              paste0("報酬表現：", rank_text(L$cs_row$ann_ret, L$cs$ann_ret), "｜",
+                     "Sharpe Ratio：", rank_text(L$cs_row$sharpe, L$cs$sharpe), "｜",
+                     "波動風險：", rank_text(L$cs_row$ann_vol, L$cs$ann_vol, higher_better = TRUE))),
+          h3(paste0("個股 vs 同產業（", L$ind, "，", nrow(L$cs_ind), " 檔）平均")),
+          if (nrow(L$cs_ind) >= 3) tableOutput("peer_tbl_ind")
+          else p("同產業可比較股票不足 3 檔，暫不顯示。")
+      )
+    )
+  })
+  
+  # --- 市場關聯 ---
+  output$market_cor_ui <- renderUI({
+    L <- lazy_data()
+    r0050 <- L$mc$cor_0050
+    fmt_cor <- function(v) ifelse(is.finite(v), sprintf("%.2f", v), "NA")
+    tagList(
+      div(class = "section-box",
+          h3("市場關聯"),
+          fluidRow(
+            column(4, div(class = "info-card", div(class = "info-card-title", "與 0050 相關係數"), h3(class = "info-card-value", fmt_cor(r0050)), p(cor_label(r0050)))),
+            column(4, h4("相關性最高"), tags$ol(lapply(names(L$mc$top), function(s) tags$li(paste0(get_stock_name(s), " ", fmt_cor(L$mc$top[[s]])))))),
+            column(4, h4("相關性最低"), tags$ol(lapply(names(L$mc$bottom), function(s) tags$li(paste0(get_stock_name(s), " ", fmt_cor(L$mc$bottom[[s]]))))))
+          ),
+          div(class = "plot-explanation",
+              ifelse(r0050 >= 0.7, "此股票與 0050 整體走勢高度一致。",
+                     ifelse(r0050 >= 0.4, "此股票與 0050 走勢部分連動。", "此股票走勢相對獨立，具有分散潛力。")))
+      )
+    )
+  })
   
   output$analysis_period_text <- renderText({
     
@@ -4200,99 +4359,7 @@ server <- function(input, output, session) {
       )
     
   })
-  
-  # ==========================================================
-  # 5.1 懶人總覽
-  # ==========================================================
-  lazy_data <- reactive({
-    sym <- analysis_symbols()[1]           # 以第一檔選取股票為主
-    req(sym, sym != "0050")
-    r <- analysis_range()
-    d <- data() %>% filter(symbol == sym)
-    req(nrow(d) >= 60)
-    
-    tech_all <- calc_technical_one(d)
-    tech_last <- tech_all[nrow(tech_all), ]
-    
-    # 財務
-    fd <- fin_raw()
-    st <- fd$stocks[[sym]]
-    ratios <- if (!is.null(st)) compute_fin_ratios(st) else rep(NA_real_, 18)
-    
-    # 全市場橫截面（同一個分析期間）
-    cs <- cross_section_stats(data(), r[1], r[2])
-    cs_row <- cs %>% filter(symbol == sym)
-    
-    # 財務分＋技術分（沿用 score_model.R）
-    f_sc <- if (!is.null(st)) score_fundamental(st)$score else NA_real_
-    t_sc <- score_technical(tech_all)$score
-    
-    # 風險標籤
-    risk <- lab_risk(cs_row$ann_vol, cs$ann_vol)
-    
-    # 同產業平均（產業比較）
-    ind <- get_stock_industry(sym)
-    cs_ind <- cs %>% filter(get_stock_industry(symbol) == ind)
-    
-    # 理由
-    peer_avg <- list(roe = mean(vapply(fd$stocks,
-                                       function(s) compute_fin_ratios(s)["roe"],
-                                       numeric(1)), na.rm = TRUE),
-                     ann_vol = mean(cs$ann_vol, na.rm = TRUE))
-    reasons <- make_reasons(
-      list(close = tech_last$close, MA20 = tech_last$MA20,
-           DIF = tech_last$DIF, DEA = tech_last$DEA, RSI14 = tech_last$RSI14,
-           ann_vol = cs_row$ann_vol),
-      ratios, peer_avg)
-    
-    # 市場關聯（第 3 階段用）
-    mc <- market_correlations(data(), sym, r[1], r[2])
-    
-    list(sym = sym, ratios = ratios, f_sc = f_sc, t_sc = t_sc,
-         fin_l = lab_fin(f_sc), tech_l = lab_tech(t_sc),
-         risk_l = risk$label, val_l = lab_val(ratios["pe"], ratios["pb"]),
-         cs = cs, cs_row = cs_row, cs_ind = cs_ind, ind = ind,
-         reasons = reasons, mc = mc)
-  })
-  
-  output$lazy_overview_ui <- renderUI({
-    L <- lazy_data()
-    total <- round(mean(c(L$f_sc, L$t_sc), na.rm = TRUE))
-    tagList(
-      div(class = "section-box",
-          h3(paste0(get_stock_label(L$sym), "｜快速總覽")),
-          fluidRow(
-            column(3, div(class = "info-card",
-                          div(class = "info-card-title", "綜合評分"),
-                          h3(class = "info-card-value", total))),
-            column(3, div(class = "info-card",
-                          div(class = "info-card-title", "財務面"),
-                          h3(class = "info-card-value", L$fin_l))),
-            column(3, div(class = "info-card",
-                          div(class = "info-card-title", "技術面"),
-                          h3(class = "info-card-value", L$tech_l))),
-            column(3, div(class = "info-card",
-                          div(class = "info-card-title", "風險面 / 估值面"),
-                          h3(class = "info-card-value",
-                             paste0(L$risk_l, " / ", L$val_l))))
-          ),
-          div(class = "reading-guide",
-              strong("一句話："),
-              one_liner(L$fin_l, L$tech_l, L$risk_l)),
-          fluidRow(
-            column(6, h4("支持原因"),
-                   tags$ul(lapply(L$reasons$support, function(x) tags$li("✓ ", x)))),
-            column(6, h4("需要注意"),
-                   tags$ul(lapply(L$reasons$caution, function(x) tags$li("△ ", x))))
-          )
-      ),
-      # === 0050 成分股比較（第 2 階段完成後就會顯示） ===
-      uiOutput("peer_compare_ui"),
-      # === 市場關聯（第 3 階段完成後就會顯示） ===
-      uiOutput("market_cor_ui")
-    )
-  })
-  
+
   # ==========================================================
   # 5.5 技術指標 K 線 (Server)
   # ==========================================================
@@ -5161,12 +5228,72 @@ server <- function(input, output, session) {
       theme_minimal() + theme(plot.title = element_text(hjust = 0.5, face = "bold"))
   })
   
+  screen_result <- reactive({
+    r <- analysis_range()
+    cs <- cross_section_stats(data(), r[1], r[2])
+    fd <- fin_raw()
+    
+    # 各股財務分＋技術分（向量化一次算完）
+    extra <- lapply(cs$symbol, function(code) {
+      st <- fd$stocks[[code]]
+      d <- data() %>% filter(symbol == code)
+      if (nrow(d) < 60 || is.null(st)) return(NULL)
+      data.frame(symbol = code,
+                 f_score = score_fundamental(st)$score,
+                 t_score = score_technical(calc_technical_one(d))$score,
+                 rg = compute_fin_ratios(st)["revenue_growth"])
+    }) %>% bind_rows()
+    x <- cs %>% left_join(extra, by = "symbol")
+    req(nrow(x) > 5)
+    
+    # 風格權重（皆轉成 0~1 分位，越大越好）
+    rk <- function(v) rank(v, na.last = "keep", ties.method = "average") /
+      sum(is.finite(v))
+    x <- x %>% mutate(
+      vol_rk  = 1 - rk(ann_vol),
+      mdd_rk  = rk(max_dd),
+      shp_rk  = rk(sharpe),
+      ret_rk  = rk(ann_ret),
+      fin_rk  = rk(f_score),
+      tech_rk = rk(t_score),
+      rg_rk   = rk(rg)
+    )
+    style_score <- switch(input$screen_style,
+                          "穩健型"     = 0.4 * x$vol_rk + 0.3 * x$mdd_rk + 0.3 * x$shp_rk,
+                          "成長型"     = 0.4 * x$rg_rk  + 0.3 * x$fin_rk + 0.3 * x$ret_rk,
+                          "低波動型"   = 0.7 * x$vol_rk + 0.3 * x$mdd_rk,
+                          "技術偏多型" = 0.7 * x$tech_rk + 0.3 * x$ret_rk)
+    x$綜合分數 <- round(style_score * 100)
+    
+    # 附加條件篩選
+    crit <- input$screen_criteria
+    if ("財務面良好" %in% crit)     x <- x %>% filter(f_score >= 60)
+    if ("技術面偏多" %in% crit)     x <- x %>% filter(t_score >= 60)
+    if ("低波動" %in% crit)         x <- x %>% filter(ann_vol <= median(ann_vol, na.rm = TRUE))
+    if ("高 Sharpe Ratio" %in% crit) x <- x %>% filter(sharpe >= median(sharpe, na.rm = TRUE))
+    if ("近期報酬佳" %in% crit)     x <- x %>% filter(ann_ret >= median(ann_ret, na.rm = TRUE))
+    if ("最大回撤較低" %in% crit)   x <- x %>% filter(max_dd >= median(max_dd, na.rm = TRUE))
+    
+    x %>% arrange(desc(綜合分數)) %>%
+      transmute(排名 = row_number(), 股票代號 = symbol,
+                股票名稱 = get_stock_name(symbol), 綜合分數,
+                財務 = lab_fin(f_score), 技術 = lab_tech(t_score),
+                風險 = ifelse(ann_vol >= quantile(ann_vol, 2/3, na.rm = TRUE), "高",
+                            ifelse(ann_vol >= quantile(ann_vol, 1/3, na.rm = TRUE), "中", "低"))) %>%
+      head(15)
+  })
+  
+  output$screen_table <- renderTable({
+    req(nrow(screen_result()) > 0)
+    screen_result()
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
   # ==========================================================
   # 6.6 投資建議
   # ==========================================================
   
   adv_scores <- reactive({
-    req(input$adv_stock)
+    req(length(input$adv_stock) > 0)  # <--- 加上 length() > 0
     fd <- fin_raw()
     req(!is.null(fd$stocks))
     w <- input$adv_w_tech / 100
@@ -5188,9 +5315,9 @@ server <- function(input, output, session) {
     out
   })
   
-  output$adv_table <- renderTable({ 
-    req(adv_scores())
-    adv_scores() 
+  output$adv_table <- renderTable({
+    req(!is.null(adv_scores()) && nrow(adv_scores()) > 0)
+    adv_scores()
   }, striped = TRUE, bordered = TRUE, hover = TRUE)
   
   output$adv_bar_chart <- renderPlot({
@@ -5205,7 +5332,7 @@ server <- function(input, output, session) {
   })
   
   output$adv_signals_ui <- renderUI({
-    req(input$adv_stock)
+    req(length(input$adv_stock) > 0)  # <--- 加上 length() > 0
     lapply(setdiff(input$adv_stock, "0050"), function(code) {
       d <- data() %>% filter(symbol == code)
       if (nrow(d) < 60) return(NULL)
@@ -5246,19 +5373,45 @@ server <- function(input, output, session) {
     out %>% arrange(desc(綜合分))
   })
   
-  output$adv_scan_table <- renderTable({ 
-    req(adv_scan_result())
-    adv_scan_result() 
+  output$adv_scan_table <- renderTable({
+    req(!is.null(adv_scan_result()) && nrow(adv_scan_result()) > 0)
+    adv_scan_result()
   }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
+  bt <- reactive({
+    req(file.exists("data/backtest_signals.rds"))
+    readRDS("data/backtest_signals.rds")
+  })
+  output$bt_summary_table <- renderTable({
+    bt()$summary %>%
+      mutate(平均報酬 = sprintf("%+.2f%%", 平均報酬 * 100),
+             正報酬比例 = sprintf("%.0f%%", 正報酬比例 * 100),
+             horizon = paste0(horizon, " 日後")) %>%
+      tidyr::pivot_wider(names_from = horizon,
+                         values_from = c(平均報酬, 正報酬比例)) %>%
+      rename(訊號 = signal)
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  output$bt_benchmark_table <- renderTable(bt()$benchmark,
+                                           striped = TRUE, bordered = TRUE, hover = TRUE)
+  output$bt_curve <- renderPlot({
+    s <- bt()$strat_curve; b <- bt()$bench_curve
+    merged <- full_join(s, b, by = "date")
+    ggplot(merged, aes(x = date)) +
+      geom_line(aes(y = strat_cum - 1, color = "系統策略"), linewidth = 0.8) +
+      geom_line(aes(y = bench_cum - 1, color = "0050"), linewidth = 0.8, linetype = "dashed") +
+      scale_color_manual(values = c("系統策略" = "steelblue", "0050" = "red")) +
+      scale_y_continuous(labels = function(z) paste0(round(z * 100), "%")) +
+      labs(title = "系統策略 vs 0050 累積報酬", x = "日期", y = "累積報酬率", color = NULL) +
+      theme_minimal() +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+            legend.position = "bottom")
+  })
   # ==========================================================
   # 7. 相關性分析
   # ==========================================================
   
   correlation_data <- reactive({
-    
-    req(
-      input$cor_stock
-    )
+    req(length(input$cor_stock) > 0)  # <--- 改為這行
     
     data() %>%
       filter(
@@ -5426,10 +5579,7 @@ server <- function(input, output, session) {
   # ----------------------------------------------------------
   
   output$portfolio_trade_inputs <- renderUI({
-    
-    req(
-      input$portfolio_stock
-    )
+    req(length(input$portfolio_stock) > 0)  # <--- 改為這行
     
     tagList(
       
@@ -5683,10 +5833,7 @@ server <- function(input, output, session) {
   # ----------------------------------------------------------
   
   portfolio_trades <- reactive({
-    
-    req(
-      input$portfolio_stock
-    )
+    req(length(input$portfolio_stock) > 0)  # <--- 改為這行
     
     result <- lapply(
       
@@ -6771,6 +6918,47 @@ server <- function(input, output, session) {
     
   })
   
+  # ==========================================================
+  # 8.1 投資組合分散效果
+  # ==========================================================
+  
+  output$portfolio_diversification_ui <- renderUI({
+    syms <- input$portfolio_stock
+    req(length(syms) >= 2)
+    wide <- data() %>%
+      filter(symbol %in% syms) %>%
+      select(date, symbol, log_return) %>%
+      tidyr::pivot_wider(names_from = symbol, values_from = log_return)
+    cm <- cor(wide[, -1], use = "pairwise.complete.obs")
+    st <- portfolio_cor_stats(cm)
+    tagList(
+      hr(), h3("投資組合分散效果"),
+      fluidRow(
+        column(4, div(class = "info-card", div(class = "info-card-title", "平均相關係數"), h3(class = "info-card-value", sprintf("%.2f", st$avg)), p(paste0("分散效果：", st$label)))),
+        column(4, h4("相關性最高組合"), p(paste0(get_stock_name(st$max_pair$s1), " × ", get_stock_name(st$max_pair$s2), " = ", sprintf("%.2f", st$max_pair$cor)))),
+        column(4, h4("相關性最低組合"), p(paste0(get_stock_name(st$min_pair$s1), " × ", get_stock_name(st$min_pair$s2), " = ", sprintf("%.2f", st$min_pair$cor))))
+      ),
+      plotOutput("portfolio_cor_heatmap", height = "500px")
+    )
+  })
+  
+  output$portfolio_cor_heatmap <- renderPlot({
+    syms <- input$portfolio_stock
+    req(length(syms) >= 2)
+    wide <- data() %>% filter(symbol %in% syms) %>% select(date, symbol, log_return) %>% tidyr::pivot_wider(names_from = symbol, values_from = log_return)
+    cm <- cor(wide[, -1], use = "pairwise.complete.obs")
+    long <- as.data.frame(as.table(cm))
+    names(long) <- c("S1", "S2", "Cor")
+    ggplot(long, aes(S1, S2, fill = Cor)) +
+      geom_tile(color = "white") +
+      geom_text(aes(label = sprintf("%.2f", Cor)), size = 5) +
+      scale_fill_gradient2(limits = c(-1, 1), midpoint = 0) +
+      scale_x_discrete(labels = get_stock_name) +
+      scale_y_discrete(labels = get_stock_name) +
+      labs(title = "投資組合相關係數熱圖", x = NULL, y = NULL, fill = "相關係數") +
+      theme_minimal() +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold"), axis.text.x = element_text(angle = 45, hjust = 1))
+  })
   
   # ==========================================================
   # 9. 資料明細
