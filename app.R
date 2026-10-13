@@ -9,7 +9,8 @@ library(dplyr)
 library(tidyr)
 source("indicators_technical.R", local = TRUE)
 source("indicators_financial.R", local = TRUE)
-source("score_model.R", local = TRUE)          
+source("score_model.R", local = TRUE)
+source("summary_model.R", local = TRUE)
 
 options(scipen = 999)
 # ============================================================
@@ -1251,6 +1252,8 @@ ui <- fluidPage(
           div(
             class = "section-box",
             h2("個股分析：報酬與風險"),
+            # === 懶人總覽（顯示所選第一檔股票） ===
+            uiOutput("lazy_overview_ui"),
             p(class = "page-description", "最多選擇 5 檔股票，以指定期間比較價格、累積報酬、日對數報酬與風險。"),
             div(class = "reading-guide", strong("分析原則："), "研究分析使用調整後價格；日對數報酬率為 ln(Pt / Pt-1)。"),
             
@@ -1455,6 +1458,13 @@ ui <- fluidPage(
         class = "section-box",
         h2("財務分析"),
         p(class = "page-description", "資料來源為 Yahoo Finance 財務模組。最多選 5 檔進行比較。（0050 為 ETF，無財報數據）"),
+        div(
+          class = "warning-note",
+          strong("資料說明："),
+          "流動比率、速動比率與毛利率於金融保險業不適用，顯示為「不適用」；",
+          "其餘個別公司若資產負債表欄位為 NA，係因 Yahoo Finance 未提供該公司資料，",
+          "權威來源為公開資訊觀測站（MOPS），可於後續版本串接補齊。"
+        ),
         div(class = "data-status", p(strong("財務資料更新時間："), textOutput("fin_updated_at", inline = TRUE))),
         selectizeInput("fin_stock", "請選擇股票（最多 5 檔）：",
                        choices = dashboard_stock_choices, selected = c("2330", "2454"),
@@ -4192,6 +4202,98 @@ server <- function(input, output, session) {
   })
   
   # ==========================================================
+  # 5.1 懶人總覽
+  # ==========================================================
+  lazy_data <- reactive({
+    sym <- analysis_symbols()[1]           # 以第一檔選取股票為主
+    req(sym, sym != "0050")
+    r <- analysis_range()
+    d <- data() %>% filter(symbol == sym)
+    req(nrow(d) >= 60)
+    
+    tech_all <- calc_technical_one(d)
+    tech_last <- tech_all[nrow(tech_all), ]
+    
+    # 財務
+    fd <- fin_raw()
+    st <- fd$stocks[[sym]]
+    ratios <- if (!is.null(st)) compute_fin_ratios(st) else rep(NA_real_, 18)
+    
+    # 全市場橫截面（同一個分析期間）
+    cs <- cross_section_stats(data(), r[1], r[2])
+    cs_row <- cs %>% filter(symbol == sym)
+    
+    # 財務分＋技術分（沿用 score_model.R）
+    f_sc <- if (!is.null(st)) score_fundamental(st)$score else NA_real_
+    t_sc <- score_technical(tech_all)$score
+    
+    # 風險標籤
+    risk <- lab_risk(cs_row$ann_vol, cs$ann_vol)
+    
+    # 同產業平均（產業比較）
+    ind <- get_stock_industry(sym)
+    cs_ind <- cs %>% filter(get_stock_industry(symbol) == ind)
+    
+    # 理由
+    peer_avg <- list(roe = mean(vapply(fd$stocks,
+                                       function(s) compute_fin_ratios(s)["roe"],
+                                       numeric(1)), na.rm = TRUE),
+                     ann_vol = mean(cs$ann_vol, na.rm = TRUE))
+    reasons <- make_reasons(
+      list(close = tech_last$close, MA20 = tech_last$MA20,
+           DIF = tech_last$DIF, DEA = tech_last$DEA, RSI14 = tech_last$RSI14,
+           ann_vol = cs_row$ann_vol),
+      ratios, peer_avg)
+    
+    # 市場關聯（第 3 階段用）
+    mc <- market_correlations(data(), sym, r[1], r[2])
+    
+    list(sym = sym, ratios = ratios, f_sc = f_sc, t_sc = t_sc,
+         fin_l = lab_fin(f_sc), tech_l = lab_tech(t_sc),
+         risk_l = risk$label, val_l = lab_val(ratios["pe"], ratios["pb"]),
+         cs = cs, cs_row = cs_row, cs_ind = cs_ind, ind = ind,
+         reasons = reasons, mc = mc)
+  })
+  
+  output$lazy_overview_ui <- renderUI({
+    L <- lazy_data()
+    total <- round(mean(c(L$f_sc, L$t_sc), na.rm = TRUE))
+    tagList(
+      div(class = "section-box",
+          h3(paste0(get_stock_label(L$sym), "｜快速總覽")),
+          fluidRow(
+            column(3, div(class = "info-card",
+                          div(class = "info-card-title", "綜合評分"),
+                          h3(class = "info-card-value", total))),
+            column(3, div(class = "info-card",
+                          div(class = "info-card-title", "財務面"),
+                          h3(class = "info-card-value", L$fin_l))),
+            column(3, div(class = "info-card",
+                          div(class = "info-card-title", "技術面"),
+                          h3(class = "info-card-value", L$tech_l))),
+            column(3, div(class = "info-card",
+                          div(class = "info-card-title", "風險面 / 估值面"),
+                          h3(class = "info-card-value",
+                             paste0(L$risk_l, " / ", L$val_l))))
+          ),
+          div(class = "reading-guide",
+              strong("一句話："),
+              one_liner(L$fin_l, L$tech_l, L$risk_l)),
+          fluidRow(
+            column(6, h4("支持原因"),
+                   tags$ul(lapply(L$reasons$support, function(x) tags$li("✓ ", x)))),
+            column(6, h4("需要注意"),
+                   tags$ul(lapply(L$reasons$caution, function(x) tags$li("△ ", x))))
+          )
+      ),
+      # === 0050 成分股比較（第 2 階段完成後就會顯示） ===
+      uiOutput("peer_compare_ui"),
+      # === 市場關聯（第 3 階段完成後就會顯示） ===
+      uiOutput("market_cor_ui")
+    )
+  })
+  
+  # ==========================================================
   # 5.5 技術指標 K 線 (Server)
   # ==========================================================
   tech_full <- reactive({
@@ -5013,7 +5115,7 @@ server <- function(input, output, session) {
     res <- lapply(fin_symbols(), function(code) {
       st <- fd$stocks[[code]]
       if (is.null(st)) return(NULL)
-      r <- compute_fin_ratios(st)
+      r <- compute_fin_ratios(st, code)
       data.frame(key = names(r), value = as.numeric(r), symbol = code, stringsAsFactors = FALSE)
     })
     out <- bind_rows(res)
@@ -5034,8 +5136,18 @@ server <- function(input, output, session) {
     meta <- ratio_meta %>% select(key, name, unit, group)
     out <- meta %>% dplyr::left_join(wide, by = "key")
     num_cols <- setdiff(names(out), c("key", "name", "unit", "group"))
-    out %>% mutate(across(all_of(num_cols), ~ ifelse(is.finite(.), sprintf("%.1f", .), "NA"))) %>%
-      select(group, name, unit, all_of(num_cols))
+    fmt <- out %>%
+      mutate(across(all_of(num_cols), ~ ifelse(is.finite(.), sprintf("%.1f", .), "NA")))
+    # 金融保險業之不適用比率顯示為「不適用」
+    for (code in fin_symbols()) {
+      if (identical(get_stock_industry_one(code), "金融保險")) {
+        lab <- paste0(get_stock_name(code), " (", code, ")")
+        if (lab %in% names(fmt)) {
+          fmt[[lab]][fmt$key %in% c("current_ratio", "quick_ratio", "gross_margin")] <- "不適用"
+        }
+      }
+    }
+    fmt %>% select(group, name, unit, all_of(num_cols))
   }, striped = TRUE, bordered = TRUE, hover = TRUE)
   
   output$fin_bar_chart <- renderPlot({
@@ -5064,7 +5176,7 @@ server <- function(input, output, session) {
       st <- fd$stocks[[code]]
       if (nrow(d) < 60 || is.null(st)) return(NULL)
       t <- score_technical(calc_technical_one(d))
-      f <- score_fundamental(st)
+      f <- score_fundamental(st, code)
       total <- w * t$score + (1 - w) * f$score
       data.frame(股票代號 = code, 股票名稱 = get_stock_name(code),
                  技術分 = round(t$score, 1), 財務分 = round(f$score, 1),
@@ -5123,7 +5235,7 @@ server <- function(input, output, session) {
       d <- data() %>% filter(symbol == code)
       if (nrow(d) < 60) return(NULL)
       t <- score_technical(calc_technical_one(d))
-      f <- score_fundamental(fd$stocks[[code]])
+      f <- score_fundamental(fd$stocks[[code]], code)
       total <- w * t$score + (1 - w) * f$score
       data.frame(股票代號 = code, 股票名稱 = get_stock_name(code),
                  技術分 = round(t$score, 1), 財務分 = round(f$score, 1),
