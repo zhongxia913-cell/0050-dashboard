@@ -1,53 +1,140 @@
-name: Update stock data
+# ============================================================
+# 放置位置：repo 根目錄的  .github/workflows/update-data.yml
+# 用途：每天台灣時間 19:00 抓最新行情 → 更新 data/stock_data.rds
+#       → 自動 commit & push（Posit Connect 會據此重新部署）
+# ============================================================
+
+name: Update 0050 stock data
 
 on:
   schedule:
-    # 每天台灣時間 19:00 執行 (UTC 11:00)
-    - cron: "00 11 * * *"
-  
-  # 允許在 GitHub Actions 頁面手動點擊執行
+    # UTC 11:00 = 台灣 19:00。GitHub 排程可能延遲 5～30 分鐘，屬正常。
+    - cron: "0 11 * * *"
   workflow_dispatch:
+    inputs:
+      reinstall_packages:
+        description: "強制重新安裝 R 套件（套件壞掉時勾選）"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
+# 避免手動觸發與排程同時跑，導致 push 衝突
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
 jobs:
-  update-data:
+  update:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      TZ: Asia/Taipei
+      R_KEEP_PKG_SOURCE: "no"
 
     steps:
-      # 1. 下載目前 repository
-      - name: Checkout repository
+      - name: 1. Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # 2. 安裝 R
-      - name: Setup R
+      - name: 2. Setup R
         uses: r-lib/actions/setup-r@v2
         with:
+          # 用最新穩定版；若哪天 tidyquant 在新 R 版裝不起來，把 release 改成 4.4.1
           r-version: "release"
+          # 使用 Posit 的 Linux 預編譯套件：安裝時間從 10 分鐘降到 1 分鐘左右
+          use-public-rspm: true
 
-      # 3. 安裝 update_data.R 需要的套件 (修正版：直接使用 Rscript 安裝)
-      - name: Install R packages
-        run: |
-          install.packages(c("tidyquant", "dplyr", "readr", "lubridate", "purrr", "stringr", "httr2", "jsonlite"))
+      - name: 3. 快取 R 套件
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.R_LIBS_USER }}
+          key: ${{ runner.os }}-r-release-${{ inputs.reinstall_packages && github.run_id || 'v1' }}
+          restore-keys: |
+            ${{ runner.os }}-r-release-
+
+      - name: 4. 安裝 R 套件
         shell: Rscript {0}
+        run: |
+          pkgs <- c("tidyquant", "dplyr", "readr", "lubridate",
+                    "purrr", "stringr", "httr2", "jsonlite")
+          need <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+          if (length(need) > 0) install.packages(need)
+          ok <- vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)
+          if (!all(ok)) stop("套件安裝失敗：", paste(pkgs[!ok], collapse = ", "))
+          cat("套件 OK：", paste(pkgs, collapse = ", "), "\n")
 
-      # 4. 執行資料更新程式
-      - name: Update stock data
+      - name: 5. 執行資料更新
         run: Rscript update_data.R
 
-      # 5. 將更新後的資料提交回 GitHub
-      - name: Commit updated data
+      # 沒有這一步，抓不到資料時 workflow 還是會顯示綠色成功
+      - name: 6. 驗證產出
+        shell: Rscript {0}
         run: |
-          git config user.name "github-actions[bot]"
+          f <- "data/stock_data.rds"
+          if (!file.exists(f)) stop("找不到 ", f)
+
+          d <- readRDS(f)
+          if (!is.data.frame(d)) stop("stock_data.rds 不是 data.frame")
+
+          need <- c("symbol", "date", "open", "high", "low", "close", "volume", "adjusted")
+          miss <- setdiff(need, names(d))
+          if (length(miss) > 0) stop("缺少欄位：", paste(miss, collapse = ", "))
+
+          if (!"0050" %in% d$symbol) stop("資料中沒有 0050")
+          if (any(!is.finite(d$adjusted))) warning("adjusted 有非有限值")
+
+          latest <- max(d$date, na.rm = TRUE)
+          cat(sprintf("筆數 %d｜檔數 %d｜最新交易日 %s\n",
+                      nrow(d), length(unique(d$symbol)), format(latest)))
+
+          if (latest < Sys.Date() - 7) {
+            stop("資料已超過 7 天未更新，請看第 5 步的錯誤訊息")
+          }
+
+      - name: 7. 執行摘要
+        if: always()
+        run: |
+          {
+            echo "## 資料更新結果"
+            echo ""
+            echo "- 狀態：${{ job.status }}"
+            echo "- 時間：$(date '+%Y-%m-%d %H:%M:%S')（Asia/Taipei）"
+            echo "- 觸發：${{ github.event_name }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 8. Commit & Push
+        run: |
+          git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # 強制加入被 .gitignore 忽略的資料檔
-          git add -f data/stock_data.rds data/data_meta.json dashboard/data/stock_data.csv
-          
-          if git diff --cached --quiet; then
-            echo "No data changes to commit."
-          else
-            git commit -m "Daily data update $(date -u +%Y-%m-%d)"
-            git push
+
+          # data/ 可能被 .gitignore 排除，所以用 -f 強制加入；檔案不存在則跳過
+          for f in data/stock_data.rds data/data_meta.json dashboard/data/stock_data.csv; do
+            if [ -f "$f" ]; then git add -f "$f"; fi
+          done
+
+          if git diff --staged --quiet; then
+            echo "資料沒有變更，略過 commit"
+            exit 0
+          fi
+
+          git commit -m "chore(data): 自動更新行情 $(date '+%Y-%m-%d %H:%M') TPE"
+
+          pushed=0
+          for i in 1 2 3; do
+            if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" \
+               && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              pushed=1
+              break
+            fi
+            echo "第 ${i} 次 push 失敗，5 秒後重試"
+            sleep 5
+          done
+
+          if [ "$pushed" -ne 1 ]; then
+            echo "push 失敗，請檢查 branch protection 或權限設定"
+            exit 1
           fi

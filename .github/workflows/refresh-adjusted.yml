@@ -1,0 +1,89 @@
+# ============================================================
+# 放置位置：repo 根目錄的  .github/workflows/refresh-adjusted.yml
+# 用途：每週重抓全歷史 adjusted，修正除權息造成的回溯調整落差
+# 選配：想先觀察一段時間再啟用，可以只留 update-data.yml
+# ============================================================
+
+name: Refresh adjusted prices
+
+on:
+  schedule:
+    # UTC 週六 12:00 = 台灣週六 20:00（盤後、非交易時段）
+    - cron: "0 12 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-adjusted
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      TZ: Asia/Taipei
+      R_KEEP_PKG_SOURCE: "no"
+
+    steps:
+      - name: 1. Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 2. Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "release"
+          use-public-rspm: true
+
+      - name: 3. 快取 R 套件
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.R_LIBS_USER }}
+          key: ${{ runner.os }}-r-release-refresh-v1
+          restore-keys: |
+            ${{ runner.os }}-r-release-
+
+      - name: 4. 安裝 R 套件
+        shell: Rscript {0}
+        run: |
+          pkgs <- c("tidyquant", "dplyr", "purrr")
+          need <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+          if (length(need) > 0) install.packages(need)
+          cat("套件 OK\n")
+
+      - name: 5. 重抓並修正 adjusted
+        run: Rscript refresh_adjusted.R
+
+      - name: 6. Commit & Push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ -f "data/stock_data.rds" ]; then git add -f "data/stock_data.rds"; fi
+
+          if git diff --staged --quiet; then
+            echo "adjusted 沒有變動，略過 commit"
+            exit 0
+          fi
+
+          git commit -m "chore(data): 全歷史 adjusted 校正 $(date '+%Y-%m-%d')"
+
+          pushed=0
+          for i in 1 2 3; do
+            if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" \
+               && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              pushed=1
+              break
+            fi
+            sleep 5
+          done
+
+          if [ "$pushed" -ne 1 ]; then
+            echo "push 失敗"
+            exit 1
+          fi
