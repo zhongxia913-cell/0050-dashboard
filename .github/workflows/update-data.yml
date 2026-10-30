@@ -20,9 +20,9 @@ on:
 permissions:
   contents: write
 
-# 避免手動觸發與排程同時跑，導致 push 衝突
+# 兩支 workflow 必須共用同一個 group，否則會同時改同一個 binary 檔而衝突
 concurrency:
-  group: update-data
+  group: stock-data
   cancel-in-progress: false
 
 jobs:
@@ -39,6 +39,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: 1-1. 同步遠端最新資料
+        run: |
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
 
       - name: 2. Setup R
         uses: r-lib/actions/setup-r@v2
@@ -108,33 +113,49 @@ jobs:
 
       - name: 8. Commit & Push
         run: |
+          set -e
+          BR="${GITHUB_REF_NAME}"
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # data/ 可能被 .gitignore 排除，所以用 -f 強制加入；檔案不存在則跳過
-          for f in data/stock_data.rds data/data_meta.json dashboard/data/stock_data.csv; do
-            if [ -f "$f" ]; then git add -f "$f"; fi
-          done
-
-          if git diff --staged --quiet; then
-            echo "資料沒有變更，略過 commit"
-            exit 0
-          fi
-
-          git commit -m "chore(data): 自動更新行情 $(date '+%Y-%m-%d %H:%M') TPE"
+          # rds 是 binary，git 無法 merge。先把這次算好的檔案備份到 /tmp，
+          # 衝突時直接整檔取用我們這份，不讓 git 去合併。
+          mkdir -p /tmp/out
+          if [ -f data/stock_data.rds ]; then cp data/stock_data.rds /tmp/out/; fi
+          if [ -f data/data_meta.json ]; then cp data/data_meta.json /tmp/out/; fi
+          if [ -f dashboard/data/stock_data.csv ]; then cp dashboard/data/stock_data.csv /tmp/out/; fi
 
           pushed=0
-          for i in 1 2 3; do
-            if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" \
-               && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+          for i in 1 2 3 4 5; do
+            git fetch origin "$BR"
+            git reset --hard "origin/$BR"      # 換成遠端最新程式碼，丟掉任何衝突狀態
+
+            cp /tmp/out/stock_data.rds data/stock_data.rds
+            if [ -f /tmp/out/data_meta.json ]; then cp /tmp/out/data_meta.json data/data_meta.json; fi
+            if [ -f /tmp/out/stock_data.csv ]; then cp /tmp/out/stock_data.csv dashboard/data/stock_data.csv; fi
+
+            git add -f data/stock_data.rds
+            if [ -f data/data_meta.json ]; then git add -f data/data_meta.json; fi
+            if [ -f dashboard/data/stock_data.csv ]; then git add -f dashboard/data/stock_data.csv; fi
+
+            if git diff --cached --quiet; then
+              echo "資料沒有變更，略過 commit"
+              exit 0
+            fi
+
+            git commit -m "chore(data): 自動更新行情 $(date '+%Y-%m-%d %H:%M') TPE"
+
+            if git push origin "HEAD:$BR"; then
               pushed=1
               break
             fi
-            echo "第 ${i} 次 push 失敗，5 秒後重試"
-            sleep 5
+
+            echo "第 $i 次 push 失敗（遠端又被推過），重新同步後重試"
+            sleep $((i * 5))
           done
 
           if [ "$pushed" -ne 1 ]; then
-            echo "push 失敗，請檢查 branch protection 或權限設定"
+            echo "push 失敗：請檢查 Workflow permissions 是否為 Read and write"
             exit 1
           fi
