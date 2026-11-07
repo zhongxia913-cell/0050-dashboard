@@ -14,6 +14,9 @@ options(scipen = 999)
 source("garch_model.R", local = TRUE)
 source("p10_model.R", local = TRUE)
 #source("update_data.R", local = TRUE)
+source("v4_score.R", local = TRUE)
+source("v4_ts.R", local = TRUE)
+source("v4_drawdown.R", local = TRUE)
 # ============================================================
 # 1. 基本設定
 # ============================================================
@@ -1724,12 +1727,58 @@ ui <- fluidPage(
     
     
     # ========================================================
-    # 1. 0050 總覽
+    # 1. 總覽
     # ========================================================
     
     tabPanel(
       
-      "0050 總覽",
+      "總覽",
+      
+      # ======================================================
+      # v4 新增：本期 0010 —— 貼在 0050 總覽 的內容之前
+      # ======================================================
+      
+      div(
+        class = "section-box",
+        h2("本期 0010"),
+        p(class = "page-description",
+          "從 50 檔成分股中，以動能 70% ＋ 風險穩定 30% 選出 10 檔，每季更新一次。"),
+        
+        fluidRow(
+          column(3, div(class = "info-card",
+                        div(class = "info-card-title", "本期報酬"),
+                        h3(class = "info-card-value", textOutput("v4_k_ret", inline = TRUE)))),
+          column(3, div(class = "info-card",
+                        div(class = "info-card-title", "0050 同期"),
+                        h3(class = "info-card-value", textOutput("v4_k_bench", inline = TRUE)))),
+          column(3, div(class = "info-card",
+                        div(class = "info-card-title", "超額報酬"),
+                        h3(class = "info-card-value", textOutput("v4_k_excess", inline = TRUE)))),
+          column(3, div(class = "info-card",
+                        div(class = "info-card-title", "本期最大回撤"),
+                        h3(class = "info-card-value", textOutput("v4_k_mdd", inline = TRUE))))
+        ),
+        
+        h3("名單"),
+        tableOutput("v4_home_table"),
+        
+        h3("本期回撤"),
+        plotOutput("v4_home_dd", height = "360px"),
+        div(class = "plot-explanation", textOutput("v4_home_dd_text", inline = TRUE)),
+        
+        h3("10 檔權重與金額"),
+        tableOutput("v4_home_weight"),
+        p(class = "page-description", textOutput("v4_home_note", inline = TRUE))
+      ),
+      
+      div(
+        class = "section-box",
+        tags$details(
+          tags$summary("查看 50 檔完整分數與篩選結果"),
+          br(),
+          tableOutput("v4_all_table")
+        )
+      ),
       
       div(
         class = "section-box",
@@ -1741,11 +1790,6 @@ ui <- fluidPage(
           "以 0050 為核心，快速掌握資料狀態、價格走勢、日對數報酬、風險與成分股近期表現。"
         ),
         
-        div(
-          class = "reading-guide",
-          strong("怎麼看？ "),
-          "先確認資料更新日期，再觀察 0050 的價格走勢與日對數報酬；下方成分股排名則用來了解近期相對表現。"
-        ),
         
         h3("資料狀態"),
         
@@ -2019,54 +2063,16 @@ ui <- fluidPage(
     
     
     # ========================================================
-    # 2. 成分股探索
-    # ========================================================
-    
-    tabPanel(
-      
-      "成分股探索",
-      
-      div(
-        class = "section-box",
-        
-        h2("成分股探索"),
-        
-        p(
-          class = "page-description",
-          "瀏覽 0050 與 50 檔成分股的指定日期行情，作為後續排名比較、個股分析與產業分析的入口。"
-        ),
-        
-        dateInput(
-          "monitor_date",
-          "行情觀察日期：",
-          value = data_max_date,
-          min = data_min_date,
-          max = data_max_date,
-          format = "yyyy-mm-dd",
-          language = "zh-TW",
-          weekstart = 1
-        ),
-        
-        div(
-          class = "reading-guide",
-          strong("怎麼看？ "),
-          "日對數報酬率是本研究主要報酬指標；可先從個股行情了解當日變化，再進一步前往成長／動能排名與個股分析。"
-        ),
-        
-        tableOutput(
-          "monitor_table"
-        )
-      )
-    ),
-    
-    
-    # ========================================================
     # 3. 成長／動能排名
     # ========================================================
     
     tabPanel(
-      
-      "成長／動能排名",
+      "排名與分數",
+      tabsetPanel(
+        id = "rank_subtabs",
+        type = "pills",
+        tabPanel(
+          "成長／動能排名",
       
       div(
         class = "section-box",
@@ -2160,9 +2166,14 @@ ui <- fluidPage(
         plotOutput("stability_ranking_chart", height = "520px"),
         
         h3("風險與穩定性摘要"),
-        tableOutput("risk_stability_table")
+        tableOutput("risk_stability_table"),
+        h3("風險穩定分拆解"),
+        p(class = "page-description",
+          "風險穩定分由五個指標加權而成，其中 GARCH 佔 10%。下表顯示每檔的拆解，可看出分數是被哪一項拉高或壓低。"),
+        tableOutput("v4_risk_decomp"),
+        
       )
-    ),
+    ))),
     
     
     # ========================================================
@@ -2170,8 +2181,12 @@ ui <- fluidPage(
     # ========================================================
     
     tabPanel(
-      
-      "主成分與分群",
+      "附錄",
+      tabsetPanel(
+        id = "appendix_tabs",
+        type = "pills",
+        tabPanel(
+          "主成分與分群",
       
       div(
         class = "section-box",
@@ -2628,7 +2643,7 @@ ui <- fluidPage(
         
       )
       
-    ),
+    ))),
     
     
     # ========================================================
@@ -2644,17 +2659,31 @@ ui <- fluidPage(
           class = "page-description",
           "主排名先告訴我們誰的成長分數較高；模型驗證再從兩個方向檢查：這個差異會不會只是剛好，以及過去真的使用這套排名時，下一期是否有區辨能力。"
         ),
+        h3("時間序列檢定"),
+        p(class = "page-description",
+          "所選股票近 5 年日對數報酬的定態性、模型選擇與殘差診斷，以及全體成分股的動能持續性檢定。"),
+        fluidRow(
+          column(4, selectInput("v4ts_stock", "檢定標的：",
+                                choices = stats::setNames(stock_info$symbol,
+                                  paste0(stock_info$name, " (", stock_info$symbol, ")")),
+                                selected = "2330")),
+          column(4, div(class = "time-info", strong("樣本："), textOutput("v4ts_n", inline = TRUE))),
+          column(4, actionButton("v4ts_run_persist", "計算動能持續性（約 3 秒）", class = "btn-primary"))
+        ),
+        h4("定態性與殘差診斷"),
+        tableOutput("v4ts_diag"),
+        h4("ARIMA 模型選擇（依 AIC 排序）"),
+        tableOutput("v4ts_grid"),
+        h4("動能持續性（panel AR(1)）"),
+        tableOutput("v4ts_persist"),
+        hr(),
+
         tabsetPanel(
           id = "validation_tabs",
           type = "pills",
           tabPanel(
             "結果穩不穩｜區塊拔靴法",
             br(),
-            div(
-              class = "reading-guide",
-              strong("白話版： "),
-              "把歷史日對數報酬『一小段一小段』重新抽很多次，看看成分股相對 0050 的成長分數優勢會不會一下就消失。如果重新抽樣後大多仍高於 0050，代表這個差異相對穩定。"
-            ),
             fluidRow(
               column(3, selectInput("bootstrap_stock", "比較成分股：", choices = setNames(stock_info$symbol, paste0(stock_info$name, " (", stock_info$symbol, ")")), selected = "2330")),
               column(3, selectInput("bootstrap_window", "抽樣歷史期間：", choices = c("近 6 個月" = 126, "近 1 年" = 252, "近 3 年" = 756), selected = 252)),
@@ -2783,17 +2812,13 @@ ui <- fluidPage(
     # ========================================================
     
     tabPanel(
-      "GARCH 與 0010",
+      "0010組合",
       
       div(
         class = "section-box",
-        h2("GARCH 波動預測與 0010 組合"),
+        h2("0010 組合"),
         p(class = "page-description",
-          "這一頁用 GARCH(1,1) 預測每檔成分股「下一季的波動」，再把報酬、風險、穩定性與波動預測四個面向合成 0010 分數，選出 10 檔並給出持股權重與交易成本。"),
-        
-        div(class = "warning-note",
-            strong("先講清楚："),
-            "GARCH 預測的是「波動（變異數）」，不是「報酬」。它不會告訴你哪檔會漲，只會告訴你哪檔接下來可能比較晃。所以它在 0010 裡的角色是風險調整，不是 alpha。"),
+          "0010 由兩個分數組成：動能分 70% ＋ 風險穩定分 30%。GARCH 只作為風險穩定分其中的一項輸入（10%），本頁的 GARCH 區塊是它的計算來源與模型診斷，不是獨立的選股因子。"),
         
         tabsetPanel(
           id = "g10_tabs",
@@ -2803,7 +2828,7 @@ ui <- fluidPage(
           # 1. 單檔 GARCH 模型
           # --------------------------------------------------
           tabPanel(
-            "GARCH 單檔模型",
+            "GARCH 診斷：單檔",
             br(),
             fluidRow(
               column(4, selectInput("g10_stock", "選擇股票：",
@@ -2854,7 +2879,7 @@ ui <- fluidPage(
           # 2. 波動預測總表
           # --------------------------------------------------
           tabPanel(
-            "波動預測總表",
+            "GARCH 診斷：全體",
             br(),
             actionButton("g10_run_all", "估計全部成分股 GARCH（約 5–15 秒）", class = "btn-primary"),
             div(class = "method-note",
@@ -2874,20 +2899,18 @@ ui <- fluidPage(
             "0010 組合",
             br(),
             div(class = "reading-guide", strong("0010 是什麼？"),
-                "從 50 檔成分股中，用四因子綜合分數選出前 10 檔，並依波動度反比給權重（單檔上限 20%）。每季重新評分一次。"),
+                "從 50 檔成分股中，以動能分 70% ＋ 風險穩定分 30% 選出前 10 檔，預設依波動度反比給權重（單檔上限 20%）。每季重新評分一次。"),
             
             fluidRow(
-              column(3, selectInput("g10_preset", "權重組合：",
-                                    choices = stats::setNames(names(P10_PRESET_LABEL), unname(P10_PRESET_LABEL)),
-                                    selected = "A")),
-              column(3, selectInput("g10_scheme", "持股權重方式：",
-                                    choices = c("波動度反比（GARCH）" = "inv_vol",
+              column(4, selectInput("g10_scheme", "持股權重方式：",
+                                    choices = c("波動度反比" = "inv_vol",
                                                 "等權重" = "equal",
                                                 "分數加權" = "score"),
                                     selected = "inv_vol")),
-              column(3, sliderInput("g10_cap", "單檔權重上限：", min = 0.10, max = 0.30, value = 0.20, step = 0.01)),
-              column(3, numericInput("g10_capital", "模擬投入金額（元）：", value = 1000000, min = 100000, step = 100000))
+              column(4, sliderInput("g10_cap", "單檔權重上限：", min = 0.10, max = 0.30, value = 0.20, step = 0.01)),
+              column(4, numericInput("g10_capital", "模擬投入金額（元）：", value = 1000000, min = 100000, step = 100000))
             ),
+            
             
             h3("本期執行摘要"),
             fluidRow(
@@ -2960,6 +2983,100 @@ ui <- fluidPage(
         h2("研究方法、指標與資料說明"),
         p(class="page-description", "如果看到某個名詞不知道在說什麼，可以回到這一頁。每個重要指標都會先用白話說明『它是什麼、怎麼看、要注意什麼』，需要時再看計算方式。"),
         div(class="reading-guide", strong("核心原則： "), "價格用來觀察走勢；日對數報酬率用來進行主要統計分析。網站結果為統計研究與歷史資料分析，不構成投資建議。"),
+        # ======================================================
+        # v4 新增：研究方法（11 個可折疊區塊）
+        # ======================================================
+        
+        tags$details(class = "method-details",
+                     tags$summary("1. 資料與樣本"),
+                     p("母體：元大台灣50（0050）及其 50 檔成分股。期間：2016-01-04 起至今，每日更新。頻率：日資料。"),
+                     p("報酬定義：日對數報酬 r_t = ln(P_t / P_{t-1})。價格只用來畫走勢與計算回撤，所有統計模型都建立在報酬上。"),
+                     p("為何用調整後價格：還原除權息與分割，避免把配息誤判成下跌。為何用對數報酬：可加總、分布較接近常態，且與 GARCH 的標準設定一致。")
+        ),
+        
+        tags$details(class = "method-details",
+                     tags$summary("2. 分數機制：0 到 100 是什麼"),
+                     p("所有分數都是同一評分日的橫斷面百分位：先對 50 檔算出原始指標，由小到大排名，再線性轉成 0 到 100（最好 100、最差 0）。方向為「越低越好」的指標（如波動度）則將分數反轉。"),
+                     p("三件必須知道的事：第一，90 分不是 90% 報酬，是相對位置很前面；第二，分數不能跨時間比較，今年 90 分不等於明年 90 分；第三，有同分時採平均排名，有效樣本只有 1 檔時給 50 分。")
+        ),
+        
+        tags$details(class = "method-details",
+                     tags$summary("3. 成長／動能分"),
+                     p("公式：動能分 = 0.55 x P(近 6 個月報酬) + 0.45 x P(近 12-1 個月報酬)，P 代表橫斷面百分位。"),
+                     p("r_6M = P_t / P_(t-126) - 1；r_12-1M = P_(t-21) / P_(t-252) - 1，也就是近 12 個月報酬但跳過最近 1 個月。"),
+                     p("為何是這兩個期間：6 個月是台灣動能文獻與 FactSet 市值動能指數的主要形成期；12-1 個月是 Jegadeesh-Titman 的標準做法，跳過最近 1 個月是為了避開短期反轉。"),
+                     p("已移除的期間：1 週（噪音太大）、1 個月（與 6 個月高度重疊）、3 年（與 12 個月相關係數過高，屬冗餘資訊）。"),
+                     p("持續性平滑：動能分（平滑後）= 0.70 x 當期分數 + 0.30 x 上期分數。依據是 panel AR(1) 檢定，動能分持續性 beta = 0.504（t = 23.66、R 平方 = 0.254），代表上期分數對本期有實質解釋力，平滑可降低不必要的換股。")
+        ),
+        
+        tags$details(class = "method-details",
+                     tags$summary("4. 風險／穩定分"),
+                     p("公式：風險穩定分 = 0.30 x P(年化波動, 反向) + 0.25 x P(最大回撤, 正向) + 0.20 x P(CVaR 95%, 反向) + 0.15 x P(Sharpe, 正向) + 0.10 x P(GARCH 比值, 反向)。全部取近 252 個交易日。"),
+                     p("年化波動 = sd(r) x 根號 252；最大回撤 = min(P_t / max(P_1..P_t) - 1)；CVaR 95% 為最差 5% 交易日的平均損失；Sharpe = (平均日報酬 x 252) / 年化波動，未扣無風險利率；GARCH 比值 = 未來 63 日預測波動 / 近一年實現波動。"),
+                     p("為何這樣配權重：波動 30% 最直觀且穩定；回撤 25% 是一般使用者真正有感的風險；CVaR 20% 補足波動看不到的尾端風險；Sharpe 15% 避免風險分變成「專挑不會動的股票」；GARCH 10% 為前瞻資訊但配適不穩定，只給輔助權重。")
+        ),
+        
+        tags$details(class = "method-details",
+                     tags$summary("5. 0010 合成、篩選與權重"),
+                     p("合成：0010 分 = 0.70 x 動能分 + 0.30 x 風險穩定分。動能給 70% 的理由是本研究單因子回測顯示動能類分數對未來報酬具正向區分能力，而風險與穩定性分數在預測報酬的目的下為負向。"),
+                     p("篩選（先篩再排，不是全部加權）：有效資料至少 280 個交易日；風險穩定分至少 20 分（相對後 20% 剔除，為主要門檻）；年化波動至多 90%、最大回撤不低於 -85%、CVaR 至多 6%（僅擋極端值）；同一產業至多 3 檔。"),
+                     p("為何用相對門檻而不是「波動小於 60%」：實證顯示絕對門檻會系統性排除高動能股，使 0010 平均動能分從 77 分掉到 50 分，組合退化為金融與電信股，與「選出相對強勢」的目標矛盾。"),
+                     p("權重：三種可選，預設波動度反比，w_i 正比於 1 / 波動_i，單檔上限 20%，超過部分以注水法重新分配。不使用 Markowitz 的原因是 50x50 共變異數矩陣求逆極不穩定，權重會出現負值或極端集中。")
+        ),
+        
+        tags$details(class = "method-details",
+                     tags$summary("6. 交易成本與再平衡"),
+                     p("手續費 0.1425%（每筆最低 20 元，買賣各一次）、證交稅 0.3%（僅賣出）、滑價 0.1%（研究設定，買賣各一次）。"),
+                     p("建倉成本 = 買進金額 x (0.1425% + 0.1%)；換股成本率 = 換手率 x (2 x 0.1425% + 2 x 0.1% + 0.3%)。"),
+                     p("換手率 = 0.5 x 各檔權重變動絕對值之和，其中舊權重採用上一季持股經一季漲跌後自然漂移的權重，而非上一季的目標權重，否則會高估換手。"),
+                     p("再平衡頻率：每季一次（63 個交易日）。相鄰兩季的持有期間不重疊，避免重疊樣本造成的統計偏誤。")
+        ),
+        
+        tags$details(class = "method-details",
+                     tags$summary("7. 時間序列模型與檢定"),
+                     p("為什麼不用 ARIMA 預測報酬（實證）：季報酬 AR(1) 在 50 檔上的平均係數為 -0.030，僅 28% 個股顯著；0050 月報酬 AR(1) 係數 0.0128、t 值 2.16，但 R 平方僅 0.00016。結論是統計顯著但沒有解釋力，因此不以時間序列模型預測報酬。"),
+                     p("定態性（ADF，落後期 4）：log 價格統計量 0.678，大於 5% 臨界值 -2.86，不拒絕單根，為非定態；日對數報酬統計量 -4.55，小於 -2.86，拒絕單根，為定態。因此價格水準不可直接建模，必須用報酬。"),
+                     p("模型選擇：以 ARIMA(p, 0, q)、p 與 q 為 0 到 2 網格搜尋，依 AIC 與 BIC 排序。若最佳模型與 ARIMA(0,0,0) 的差距極小，代表加入 ARMA 項沒有實質改善。"),
+                     p("殘差診斷：Ljung-Box Q(10) 用來看殘差是否仍有自我相關（p 大於 0.05 代表通過）；ARCH-LM(5) 用來檢定殘差平方是否仍有自我相關（p 小於 0.05 代表存在波動叢聚，需要 GARCH）。"),
+                     p("動能持續性（panel AR(1)）：score_it = a + b x score_i,(t-1) + u_it。實證結果 b = 0.504、t = 23.66、R 平方 0.254、樣本 1647（34 季 x 50 檔）；加入個股固定效果後 b = 0.462、R 平方 0.214，代表持續性不是個股異質性造成。這是「用當期分數選股並做平滑」的統計依據。")
+        ),
+        
+        tags$details(class = "method-details",
+                     tags$summary("8. GARCH 波動模型"),
+                     p("模型：r_t = epsilon_t，epsilon_t = sigma_t x z_t，z_t 為標準常態；變異數方程 sigma_t 平方 = omega + alpha x epsilon_(t-1) 平方 + beta x sigma_(t-1) 平方。"),
+                     p("參數意義：omega 為長期變異數常數；alpha 為 ARCH 項，衡量昨日衝擊對今日波動的影響；beta 為 GARCH 項，衡量波動的記憶；alpha + beta 為持續性，越接近 1 越難消退；半衰期 = ln(0.5) / ln(alpha + beta)。"),
+                     p("估計方法：以最大概似法估計，對數概似函數為 -0.5 乘以 (ln(2 pi) + ln(sigma_t 平方) + r_t 平方 / sigma_t 平方) 之和。以重新參數化保證 alpha + beta 小於 1 的約束成立；標準誤以數值 Hessian 取逆後，再以 delta method 轉回原始參數。"),
+                     p("實證結果（示範）：0050 的 omega = 0.0711、alpha = 0.1159（t = 5.5）、beta = 0.8601（t = 34.6）、alpha + beta = 0.9759、半衰期 28.5 日；台積電 alpha = 0.0985（t = 4.3）、alpha + beta = 0.9410、半衰期 11.4 日；中華電 alpha + beta = 0.8585、半衰期 4.5 日。所有 alpha 均顯著，顯示成分股普遍存在波動叢聚。"),
+                     p("診斷與限制：中華電的標準化殘差 Ljung-Box Q(10) = 28.98 大於 18.31，代表仍有殘留結構，配適不足，需考慮 GARCH-t 或加入 AR 項；部分個股 alpha + beta 接近 1（近 IGARCH），長期預測不穩定，此時只報方向不報幅度。"),
+                     p("多期預測：E[sigma_(T+h) 平方] = omega + (alpha + beta) x E[sigma_(T+h-1) 平方]，從當期變異數反覆套用，h 越大越收斂到長期平均。這是模型設計（均值回歸），不是預測失效。網站取 h 為 1 到 63 的平均，換算年化波動作為下一季預測。")
+        ),
+        
+        tags$details(class = "method-details",
+                     tags$summary("9. 回撤分析"),
+                     p("定義：峰值_t = max(value_1..value_t)；回撤_t = value_t / 峰值_t - 1；最大回撤 = 回撤_t 的最小值。"),
+                     p("輸出項目：最大回撤、高點日、低點日、回復日、高點到低點天數、低點到回復天數、水下時間比例、最長連續水下天數。"),
+                     p("為何不只看最大回撤：跌 30% 但三個月回來，與跌 20% 但兩年才回來，投資體驗完全不同，深度與時間必須一起看。"),
+                     p("兩個視角：歷史回測回撤（季度再平衡淨值，已扣成本）與當期持有回撤（本期權重買進持有，自上次再平衡起算）。")
+        ),
+        
+        tags$details(class = "method-details",
+                     tags$summary("10. 模型驗證"),
+                     p("設定：回看近 3 年（756 個交易日）、持有未來 6 個月（126 個交易日）、每月重新評分、起始年 2019。"),
+                     p("比較模型：動能分、風險穩定分、0010、6 個月動能、舊版綜合分數。"),
+                     p("核心指標：Top5 與 Bottom5 的未來報酬差（Spread）、Top5 勝率、勝過 0050 比例、Spearman 等級相關、有效回測次數。"),
+                     p("判讀門檻：Spread 大於 0、勝率大於 50%、Spearman 大於 0，三者同時成立才算具有區分能力。")
+        ),
+        
+        tags$details(class = "method-details",
+                     tags$summary("11. 研究限制"),
+                     p("存活者偏誤：以現行成分股回推歷史，2019 年的成分股不等於現在。"),
+                     p("重疊樣本：模型驗證每月評分但看未來 6 個月，相鄰觀測重疊 5 個月，Spread 的 t 值不能直接當獨立樣本使用。"),
+                     p("GARCH 參數穩定性：部分個股 alpha + beta 接近 1，長期預測不穩定；中華電等個股殘差檢定未通過。"),
+                     p("交易成本估計：滑價 0.1% 為假設值，未考慮流動性衝擊與大單折價。"),
+                     p("相對分數的限制：0 到 100 分是當期相對位置，不具跨期可比性。"),
+                     p("權重為研究設定：70/30、30/25/20/15/10 等比例皆為本研究設定，非文獻固定標準，仍需敏感度分析。")
+        ),
+        
         tags$details(
           class="method-details",
           open=NA,
@@ -3039,6 +3156,227 @@ ui <- fluidPage(
 # ============================================================
 
 server <- function(input, output, session) {
+  # ============================================================
+  # v4 首頁：0010 總覽
+  # 貼在 server 內（位置任意，建議最後）
+  # 依賴：v4_score.R、v4_drawdown.R
+  # ============================================================
+  output$v4_risk_decomp <- shiny::renderTable({
+    t <- v4_tbl()
+    shiny::req(!is.null(t))
+    o <- t[order(-t$risk_score), , drop = FALSE]
+    data.frame(
+      排名 = seq_len(nrow(o)),
+      股票 = paste0(o$name, "（", o$symbol, "）"),
+      風險穩定分 = sprintf("%.1f", o$risk_score),
+      波動 = sprintf("%.1f", o$p_vol),
+      回撤 = sprintf("%.1f", o$p_mdd),
+      `CVaR` = sprintf("%.1f", o$p_cvar),
+      Sharpe = sprintf("%.1f", o$p_sharpe),
+      `GARCH` = sprintf("%.1f", o$p_garch),
+      `GARCH 比值` = ifelse(is.finite(o$ratio), sprintf("%.2f", o$ratio), "—"),
+      check.names = FALSE, stringsAsFactors = FALSE
+    )
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
+  
+  v4_cap_amount <- 1000000   # 首頁試算金額
+  
+  # ---- 價格矩陣 ----
+  v4_pm <- shiny::reactive({
+    d <- as.data.frame(data())
+    d <- d[d$symbol %in% c("0050", stock_info$symbol), , drop = FALSE]
+    d <- d[!is.na(d$adjusted) & d$adjusted > 0, , drop = FALSE]
+    d <- d[order(d$date), , drop = FALSE]
+    
+    w <- as.data.frame(
+      tidyr::pivot_wider(d[, c("date", "symbol", "adjusted")],
+                         names_from = symbol, values_from = adjusted)
+    )
+    dates <- as.Date(w$date)
+    m <- as.matrix(w[, -1, drop = FALSE])
+    rownames(m) <- as.character(dates)
+    storage.mode(m) <- "double"
+    m
+  })
+  
+  # ---- 分數表（若 GARCH 表已存在就一併納入）----
+  v4_tbl <- shiny::reactive({
+    g <- tryCatch(get("g10_store")(), error = function(e) NULL)
+    v4_score_table(as.data.frame(data()), garch_tbl = g)
+  })
+  
+  v4_sel <- shiny::reactive({
+    t <- v4_tbl()
+    shiny::req(!is.null(t), nrow(t) >= 10)
+    v4_pick(t, 10)
+  })
+  
+  v4_w <- shiny::reactive({
+    s <- v4_sel()
+    shiny::req(nrow(s) > 0)
+    v4_weights(s, scheme = "inv_vol", cap = 0.20)
+  })
+  
+  # ---- 上一次再平衡日（最近一個季末）----
+  v4_reb <- shiny::reactive({
+    m <- v4_pm()
+    d <- as.Date(rownames(m))
+    key <- paste0(format(d, "%Y"), "Q", ceiling(as.integer(format(d, "%m")) / 3))
+    last_idx <- sort(as.integer(tapply(seq_along(d), key, max)))
+    i <- if (length(last_idx) >= 2) last_idx[length(last_idx) - 1] else last_idx[1]
+    list(idx = i, date = d[i])
+  })
+  
+  # ---- 當期持有（買進持有，不算再平衡）----
+  v4_hold <- shiny::reactive({
+    v4_buyhold(v4_pm(), v4_w(), v4_reb()$idx)
+  })
+  
+  v4_bench <- shiny::reactive({
+    m <- v4_pm()
+    i <- v4_reb()$idx
+    x <- m[i:nrow(m), "0050"]
+    data.frame(date = as.Date(rownames(m)[i:nrow(m)]),
+               value = x / x[1])
+  })
+  
+  v4_hold_ret <- shiny::reactive({
+    h <- v4_hold()
+    shiny::req(!is.null(h))
+    h$value[nrow(h)] - 1
+  })
+  
+  v4_bench_ret <- shiny::reactive({
+    b <- v4_bench()
+    shiny::req(!is.null(b))
+    b$value[nrow(b)] - 1
+  })
+  
+  output$v4_k_ret <- shiny::renderText({
+    v <- v4_hold_ret()
+    ifelse(is.finite(v), sprintf("%+.2f%%", v * 100), "—")
+  })
+  
+  output$v4_k_bench <- shiny::renderText({
+    v <- v4_bench_ret()
+    ifelse(is.finite(v), sprintf("%+.2f%%", v * 100), "—")
+  })
+  
+  output$v4_k_excess <- shiny::renderText({
+    v <- v4_hold_ret() - v4_bench_ret()
+    ifelse(is.finite(v), sprintf("%+.2f%%", v * 100), "—")
+  })
+  
+  output$v4_k_mdd <- shiny::renderText({
+    h <- v4_hold()
+    shiny::req(!is.null(h))
+    s <- v4_dd_series(h$value, h$date)
+    st <- v4_dd_stats(s)
+    if (is.null(st)) "—" else sprintf("%.2f%%", st$max_dd * 100)
+  })
+  
+  # ---- 名單 ----
+  output$v4_home_table <- shiny::renderTable({
+    s <- v4_sel()
+    w <- v4_w()
+    data.frame(
+      名次 = seq_len(nrow(s)),
+      股票 = paste0(s$name, "（", s$symbol, "）"),
+      產業 = s$industry,
+      動能分 = sprintf("%.1f", s$mom_score),
+      風險分 = sprintf("%.1f", s$risk_score),
+      `0010 分` = sprintf("%.1f", s$p10_smooth),
+      權重 = sprintf("%.1f%%", as.numeric(w[s$symbol]) * 100),
+      check.names = FALSE, stringsAsFactors = FALSE
+    )
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
+  # ---- 回撤圖 ----
+  output$v4_home_dd <- shiny::renderPlot({
+    h <- v4_hold()
+    b <- v4_bench()
+    shiny::req(!is.null(h), !is.null(b))
+    
+    sh <- v4_dd_series(h$value, h$date)
+    sb <- v4_dd_series(b$value, b$date)
+    
+    df <- rbind(
+      data.frame(date = sh$date, dd = sh$dd, series = "0010"),
+      data.frame(date = sb$date, dd = sb$dd, series = "0050")
+    )
+    
+    ggplot2::ggplot(df, ggplot2::aes(x = date, y = dd, colour = series)) +
+      ggplot2::geom_line(linewidth = 0.9) +
+      ggplot2::scale_y_continuous(labels = function(z) paste0(round(z * 100), "%")) +
+      ggplot2::labs(title = "本期回撤（自上次再平衡起）", x = NULL, y = "回撤", colour = NULL) +
+      ggplot2::theme_minimal() +
+      ggplot2::theme(legend.position = "bottom",
+                     plot.title = ggplot2::element_text(hjust = 0.5, face = "bold"))
+  })
+  
+  output$v4_home_dd_text <- shiny::renderText({
+    h <- v4_hold()
+    shiny::req(!is.null(h))
+    st <- v4_dd_stats(v4_dd_series(h$value, h$date))
+    if (is.null(st)) return("資料不足")
+    paste0(
+      "最大回撤 ", sprintf("%.2f%%", st$max_dd * 100),
+      "（", as.character(st$trough_date), "）",
+      "；水下時間 ", sprintf("%.0f%%", st$underwater_pct * 100),
+      "；最長連續水下 ", st$longest_underwater, " 個交易日。"
+    )
+  })
+  
+  # ---- 權重與金額 ----
+  output$v4_home_weight <- shiny::renderTable({
+    s <- v4_sel()
+    w <- v4_w()
+    amt <- as.numeric(w[s$symbol]) * v4_cap_amount
+    fee <- pmax(20, amt * 0.001425)
+    
+    data.frame(
+      股票 = paste0(s$name, "（", s$symbol, "）"),
+      權重 = sprintf("%.1f%%", as.numeric(w[s$symbol]) * 100),
+      金額 = formatC(round(amt), format = "d", big.mark = ","),
+      買進手續費 = formatC(round(fee), format = "d", big.mark = ","),
+      check.names = FALSE, stringsAsFactors = FALSE
+    )
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
+  output$v4_home_note <- shiny::renderText({
+    d <- as.Date(rownames(v4_pm()))
+    last <- max(d, na.rm = TRUE)
+    y <- as.integer(format(last, "%Y")); mo <- as.integer(format(last, "%m"))
+    q <- (mo - 1) %/% 3 + 1
+    if (q == 4) { y <- y + 1; mo <- 1 } else { mo <- q * 3 + 1 }
+    nd <- as.Date(sprintf("%04d-%02d-01", y, mo))
+    while (as.integer(format(nd, "%u")) > 5) nd <- nd + 1
+    
+    paste0("評分日：", as.character(v4_reb()$date),
+           "｜下次再平衡：", as.character(nd),
+           "｜投入金額試算：", formatC(v4_cap_amount, format = "d", big.mark = ","), " 元")
+  })
+  
+  # ---- 50 檔完整表 ----
+  output$v4_all_table <- shiny::renderTable({
+    t <- v4_tbl()
+    shiny::req(!is.null(t))
+    data.frame(
+      排名 = seq_len(nrow(t)),
+      股票 = paste0(t$name, "（", t$symbol, "）"),
+      產業 = t$industry,
+      動能 = sprintf("%.1f", t$mom_score),
+      風險 = sprintf("%.1f", t$risk_score),
+      `0010` = sprintf("%.1f", t$p10_smooth),
+      波動 = sprintf("%.1f%%", t$vol * 100),
+      回撤 = sprintf("%.1f%%", t$mdd * 100),
+      CVaR = sprintf("%.2f%%", t$cvar * 100),
+      篩選 = t$reason,
+      check.names = FALSE, stringsAsFactors = FALSE
+    )
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
   
   # ==========================================================
   # 1. 自動讀取資料
@@ -10483,12 +10821,12 @@ server <- function(input, output, session) {
       # 最近一個「已結束」的季末：必須排除資料最後一天所屬的本季，
       # 否則買進日 = 今天，每檔報酬永遠是 0，而且會跟現在的名單完全一樣。
       key <- paste0(format(dates, "%Y"), "Q", ceiling(as.integer(format(dates, "%m")) / 3))
-      lastq <- tapply(seq_along(dates), key, max)
+      lastq <- sort(as.integer(tapply(seq_along(dates), key, max)))
       idx_all <- sort(as.integer(lastq))
       idx_all <- idx_all[idx_all < nrow(m)]
       if (!length(idx_all)) stop("資料裡找不到已結束的季度")
       
-      i <- max(idx_all)
+      i <- if (length(lastq) >= 2) lastq[length(lastq) - 1] else lastq[1]
       if (i < 300) stop("最近季末之前的交易日不足 300 天")
       
       sub <- m[1:i, , drop = FALSE]
@@ -10699,9 +11037,395 @@ server <- function(input, output, session) {
     )
   }, striped = TRUE, bordered = TRUE, hover = TRUE)
   
+  # ============================================================
+  # v4 覆寫：0010 組合頁改接「動能分 + 風險穩定分」
+  # ============================================================
+  
+  v4_w <- shiny::reactive({
+    s <- v4_sel()
+    shiny::req(nrow(s) > 0)
+    cap <- input$g10_cap
+    if (is.null(cap) || !is.finite(cap)) cap <- 0.20
+    sch <- input$g10_scheme
+    if (is.null(sch)) sch <- "inv_vol"
+    v4_weights(s, scheme = sch, cap = cap)
+  })
+  
+  g10_track_v4 <- shiny::reactive({
+    d <- as.data.frame(data())
+    reb <- v4_reb()
+    shiny::req(!is.null(reb), !is.na(reb$date))
+    
+    t <- v4_score_table(d[d$date <= reb$date, , drop = FALSE])
+    shiny::req(!is.null(t), nrow(t) >= 3)
+    
+    pm <- v4_pm()
+    sel <- v4_pick(t, 10)
+    sel <- sel[sel$symbol %in% colnames(pm), , drop = FALSE]
+    shiny::req(nrow(sel) >= 3)
+    
+    w <- v4_weights(sel, scheme = "inv_vol", cap = 0.20)
+    i <- reb$idx
+    buy <- unname(pm[i, sel$symbol]); names(buy) <- sel$symbol
+    now <- unname(pm[nrow(pm), sel$symbol]); names(now) <- sel$symbol
+    for (k in seq_along(now)) {
+      if (!is.finite(now[k])) {
+        col <- pm[, sel$symbol[k]]
+        idx <- suppressWarnings(max(which(is.finite(col))))
+        if (is.finite(idx)) now[k] <- col[idx]
+      }
+    }
+    list(date = reb$date, sel = sel, w = w, buy = buy, now = now,
+         ret = now / buy - 1)
+  })
+  
+  g10_cmp_v4 <- shiny::reactive({
+    tr <- g10_track_v4()
+    cur <- v4_sel()
+    cw <- v4_w()
+    
+    prev <- names(tr$w)
+    now <- names(cw)
+    drift <- tr$w * (1 + tr$ret[names(tr$w)])
+    drift[!is.finite(drift)] <- 0
+    if (sum(drift) > 0) drift <- drift / sum(drift)
+    
+    all_sym <- union(prev, now)
+    a <- ifelse(all_sym %in% names(drift), drift[all_sym], 0)
+    b <- ifelse(all_sym %in% names(cw), cw[all_sym], 0)
+    
+    list(new = setdiff(now, prev), hold = intersect(now, prev),
+         drop = setdiff(prev, now),
+         turnover = sum(abs(b - a), na.rm = TRUE) / 2)
+  })
+  
+  output$g10_n_new <- shiny::renderText({
+    paste0(length(g10_cmp_v4()$new), " 檔")
+  })
+  
+  output$g10_n_hold <- shiny::renderText({
+    paste0(length(g10_cmp_v4()$hold), " 檔")
+  })
+  
+  output$g10_n_drop <- shiny::renderText({
+    paste0(length(g10_cmp_v4()$drop), " 檔")
+  })
+  
+  output$g10_turnover_est <- shiny::renderText({
+    paste0(round(g10_cmp_v4()$turnover * 100, 1), "%")
+  })
+  
+  output$g10_weights <- shiny::renderTable({
+    s <- v4_sel()
+    w <- v4_w()
+    cap <- as.numeric(input$g10_capital)
+    amt <- as.numeric(w[s$symbol]) * cap
+    
+    data.frame(
+      排名 = seq_len(nrow(s)),
+      股票 = paste0(s$name, "（", s$symbol, "）"),
+      產業 = s$industry,
+      `0010 分` = sprintf("%.1f", s$p10_smooth),
+      動能分 = sprintf("%.1f", s$mom_score),
+      風險穩定分 = sprintf("%.1f", s$risk_score),
+      `GARCH 比值` = ifelse(is.finite(s$ratio), sprintf("%.2f", s$ratio), "—"),
+      權重 = sprintf("%.1f%%", as.numeric(w[s$symbol]) * 100),
+      金額 = formatC(round(amt), format = "d", big.mark = ","),
+      check.names = FALSE, stringsAsFactors = FALSE
+    )
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
+  output$g10_cost <- shiny::renderTable({
+    w <- v4_w()
+    cap <- as.numeric(input$g10_capital)
+    amt <- as.numeric(w) * cap
+    
+    buy_fee  <- sum(pmax(P10_COST$min_fee, amt * P10_COST$fee))
+    buy_slip <- sum(amt * P10_COST$slip)
+    sell_fee <- sum(pmax(P10_COST$min_fee, amt * P10_COST$fee))
+    sell_tax <- sum(amt * P10_COST$tax)
+    sell_slip <- sum(amt * P10_COST$slip)
+    total <- buy_fee + buy_slip + sell_fee + sell_tax + sell_slip
+    
+    out <- data.frame(
+      項目 = c("買進手續費", "買進滑價", "賣出手續費", "證交稅（賣出）",
+             "賣出滑價", "建倉成本合計", "全數賣出之總成本", "佔投入金額（%）"),
+      金額 = c(buy_fee, buy_slip, sell_fee, sell_tax, sell_slip,
+             buy_fee + buy_slip, total, total / cap * 100),
+      check.names = FALSE, stringsAsFactors = FALSE
+    )
+    out$金額 <- ifelse(out$項目 == "佔投入金額（%）",
+                     paste0(sprintf("%.2f", out$金額), "%"),
+                     formatC(round(out$金額), format = "d", big.mark = ","))
+    out
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
+  output$g10_next_date <- shiny::renderUI({
+    d <- as.Date(rownames(v4_pm()))
+    last <- max(d, na.rm = TRUE)
+    y <- as.integer(format(last, "%Y")); mo <- as.integer(format(last, "%m"))
+    q <- (mo - 1) %/% 3 + 1
+    if (q == 4) { y <- y + 1; mo <- 1 } else { mo <- q * 3 + 1 }
+    nd <- as.Date(sprintf("%04d-%02d-01", y, mo))
+    while (as.integer(format(nd, "%u")) > 5) nd <- nd + 1
+    
+    div(class = "time-info",
+        strong("下一次再平衡日："), as.character(nd),
+        "（每季一次；評分使用當日以前資料，持有 63 個交易日）")
+  })
+  
+  output$g10_track <- shiny::renderTable({
+    tr <- g10_track_v4()
+    g <- tryCatch(get("g10_store")(), error = function(e) NULL)
+    fv <- NULL
+    if (!is.null(g)) fv <- g$forecast_vol[match(tr$sel$symbol, g$symbol)]
+    if (is.null(fv) || all(!is.finite(fv))) fv <- tr$sel$vol
+    bad <- !is.finite(fv)
+    fv[bad] <- tr$sel$vol[bad]
+    
+    s <- fv / sqrt(252) * sqrt(21)
+    stop_px <- tr$buy * (1 - input$g10_k_stop * s)
+    take_px <- tr$buy * (1 + input$g10_k_take * s)
+    status <- ifelse(tr$now <= stop_px, "已觸停損",
+                     ifelse(tr$now >= take_px, "已觸停利", "持有中"))
+    status[is.na(status)] <- "—"
+    
+    data.frame(
+      股票 = paste0(tr$sel$name, "（", tr$sel$symbol, "）"),
+      權重 = sprintf("%.1f%%", as.numeric(tr$w) * 100),
+      買進價 = ifelse(is.finite(tr$buy), sprintf("%.2f", tr$buy), "—"),
+      現價 = ifelse(is.finite(tr$now), sprintf("%.2f", tr$now), "—"),
+      報酬 = ifelse(is.finite(tr$ret), sprintf("%+.2f%%", tr$ret * 100), "—"),
+      停損價 = ifelse(is.finite(stop_px), sprintf("%.2f", stop_px), "—"),
+      停利價 = ifelse(is.finite(take_px), sprintf("%.2f", take_px), "—"),
+      狀態 = status,
+      check.names = FALSE, stringsAsFactors = FALSE
+    )
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+  
+  output$g10_track_note <- shiny::renderUI({
+    div(class = "method-note",
+        "停損／停利距離 = k × 預測 21 日波動。波動估計優先採用 GARCH 預測值；若尚未執行全成分股估計，改用近一年實現波動。此為統計參考距離，非交易建議。")
+  })
   
   
   
+  
+  # ============================================================
+  # 時間序列檢定（畫面）
+  # ============================================================
+
+  v4ts_px <- shiny::reactive({
+    s <- input$v4ts_stock
+    shiny::req(!is.null(s), nzchar(s))
+    d <- as.data.frame(data())
+    x <- d[d$symbol == s & !is.na(d$adjusted) & d$adjusted > 0, , drop = FALSE]
+    x <- x[order(x$date), , drop = FALSE]
+    shiny::req(nrow(x) > 300)
+    as.numeric(x$adjusted)
+  })
+
+  output$v4ts_n <- shiny::renderText({
+    paste0(length(v4ts_px()), " 個交易日")
+  })
+
+  v4ts_calc <- shiny::reactive({
+    p <- utils::tail(v4ts_px(), 1261)
+    lp <- log(p)
+    r <- diff(lp)
+
+    grid <- v4_arima_grid(r, 2, 2, 0)
+    best <- NULL
+    if (!is.null(grid) && nrow(grid)) {
+      b <- grid[1, , drop = FALSE]
+      fit <- try(stats::arima(r, order = c(b$p, b$d, b$q), method = "ML"), silent = TRUE)
+      if (!inherits(fit, "try-error")) {
+        res <- as.numeric(fit$residuals)
+        best <- list(p = b$p, d = b$d, q = b$q, aic = b$aic, bic = b$bic,
+                     lb10 = v4_ljung(res, 10), lb20 = v4_ljung(res, 20),
+                     arch = v4_arch_lm(res, 5))
+      }
+    }
+    list(adf_p = v4_adf(lp, 4), adf_r = v4_adf(r, 4),
+         grid = grid, best = best, n = length(r))
+  })
+
+  output$v4ts_diag <- shiny::renderTable({
+    x <- v4ts_calc()
+    f <- function(v, d = 3) ifelse(is.finite(v), sprintf(paste0("%.", d, "f"), v), "—")
+    adf_txt <- function(a) {
+      if (is.null(a)) return("—")
+      paste0(f(a$stat), "  →  ",
+             if (isTRUE(a$reject5)) "拒絕單根（定態）" else "不拒絕單根（非定態）")
+    }
+
+    rows <- c(
+      "樣本（交易日）" = as.character(x$n),
+      "ADF：log 價格" = adf_txt(x$adf_p),
+      "ADF：日對數報酬" = adf_txt(x$adf_r),
+      "最佳 ARIMA（AIC）" = if (is.null(x$best)) "—" else paste0("ARIMA(", x$best$p, ",", x$best$d, ",", x$best$q, ")"),
+      "AIC / BIC" = if (is.null(x$best)) "—" else paste0(f(x$best$aic, 1), " / ", f(x$best$bic, 1)),
+      "Ljung-Box Q(10)" = if (is.null(x$best) || is.null(x$best$lb10)) "—" else paste0(f(x$best$lb10$stat, 2), "（p = ", f(x$best$lb10$p, 4), "）"),
+      "Ljung-Box Q(20)" = if (is.null(x$best) || is.null(x$best$lb20)) "—" else paste0(f(x$best$lb20$stat, 2), "（p = ", f(x$best$lb20$p, 4), "）"),
+      "ARCH-LM(5)" = if (is.null(x$best) || is.null(x$best$arch)) "—" else paste0("F = ", f(x$best$arch$F, 2), "（p = ", f(x$best$arch$p, 4), "）")
+    )
+    data.frame(項目 = names(rows), 結果 = unname(rows),
+               check.names = FALSE, stringsAsFactors = FALSE)
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+
+  output$v4ts_grid <- shiny::renderTable({
+    g <- v4ts_calc()$grid
+    if (is.null(g)) return(data.frame(結果 = "樣本不足"))
+    g <- utils::head(g, 6)
+    data.frame(
+      模型 = paste0("ARIMA(", g$p, ",", g$d, ",", g$q, ")"),
+      對數概似 = sprintf("%.2f", g$loglik),
+      AIC = sprintf("%.2f", g$aic),
+      BIC = sprintf("%.2f", g$bic),
+      check.names = FALSE, stringsAsFactors = FALSE
+    )
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+
+  v4ts_persist <- shiny::eventReactive(input$v4ts_run_persist, {
+    pm <- v4_pm()
+    n <- nrow(pm)
+    shiny::req(n > 400)
+    r <- log(pm[-1, , drop = FALSE] / pm[-n, , drop = FALSE])
+    dates <- as.Date(rownames(pm))[-1]
+    key <- paste0(format(dates, "%Y"), "Q", ceiling(as.integer(format(dates, "%m")) / 3))
+    idx <- sort(as.integer(tapply(seq_along(dates), key, max)))
+    idx <- idx[idx > 300]
+    withProgress(message = "計算動能持續性…", value = 0.5, {
+      v4_persistence(r, idx, 126)
+    })
+  })
+
+  output$v4ts_persist <- shiny::renderTable({
+    x <- v4ts_persist()
+    if (is.null(x)) return(data.frame(提示 = "請按上方「計算動能持續性」"))
+    data.frame(
+      統計量 = c("beta（持續性）", "t 值", "R 平方", "樣本數", "季數"),
+      數值 = c(sprintf("%.3f", x$beta), sprintf("%.2f", x$t),
+               sprintf("%.3f", x$r2), as.character(x$n), as.character(x$quarters)),
+      check.names = FALSE, stringsAsFactors = FALSE
+    )
+  }, striped = TRUE, bordered = TRUE, hover = TRUE)
+
+  # ============================================================
+  # v4 季度回測（取代舊四因子版本）
+  # ============================================================
+
+  v4_backtest <- function(df, cost = P10_COST, cap = 0.20, hold = 63, n = 10,
+                          scheme = "inv_vol", progress = NULL) {
+    d <- as.data.frame(df)
+    d <- d[d$symbol %in% c("0050", stock_info$symbol), , drop = FALSE]
+    d <- d[!is.na(d$adjusted) & d$adjusted > 0, , drop = FALSE]
+    d <- d[order(d$date), , drop = FALSE]
+
+    w <- as.data.frame(tidyr::pivot_wider(d[, c("date", "symbol", "adjusted")],
+                                          names_from = symbol, values_from = adjusted))
+    dates <- as.Date(w$date)
+    pm <- as.matrix(w[, -1, drop = FALSE])
+    rownames(pm) <- as.character(dates)
+    storage.mode(pm) <- "double"
+
+    key <- paste0(format(dates, "%Y"), "Q", ceiling(as.integer(format(dates, "%m")) / 3))
+    idx <- sort(as.integer(tapply(seq_along(dates), key, max)))
+    idx <- idx[idx > 300 & idx < (length(dates) - hold)]
+    if (length(idx) < 4) return(NULL)
+
+    rec <- list()
+    prev_w <- NULL
+    prev_ret <- NULL
+    eq <- 1
+    eq0 <- 1
+
+    for (k in seq_along(idx)) {
+      i <- idx[k]
+      if (!is.null(progress)) progress(k, length(idx), NA)
+
+      tt <- try(v4_score_table(d[d$date <= dates[i], , drop = FALSE]), silent = TRUE)
+      if (inherits(tt, "try-error") || is.null(tt) || nrow(tt) < n) next
+
+      sel <- v4_pick(tt, n)
+      if (nrow(sel) < 3) next
+      ww <- v4_weights(sel, scheme = scheme, cap = cap)
+
+      j <- min(i + hold, nrow(pm))
+      fwd <- exp(colSums(log(pm[(i + 1):j, , drop = FALSE] /
+                              pm[i:(j - 1), , drop = FALSE]), na.rm = TRUE)) - 1
+      gross <- sum(ww * fwd[names(ww)], na.rm = TRUE)
+
+      if (is.null(prev_w)) {
+        turnover <- 1
+        cost_rate <- cost$fee + cost$slip
+      } else {
+        drift <- prev_w * (1 + prev_ret[names(prev_w)])
+        drift[!is.finite(drift)] <- 0
+        if (sum(drift) > 0) drift <- drift / sum(drift)
+        all_sym <- union(names(prev_w), names(ww))
+        a <- ifelse(all_sym %in% names(drift), drift[all_sym], 0)
+        b <- ifelse(all_sym %in% names(ww), ww[all_sym], 0)
+        turnover <- sum(abs(b - a), na.rm = TRUE) / 2
+        cost_rate <- turnover * (2 * cost$fee + 2 * cost$slip + cost$tax)
+      }
+
+      net <- (1 + gross) * (1 - cost_rate) - 1
+      bench <- fwd["0050"]
+      if (!is.finite(bench)) bench <- 0
+
+      eq <- eq * (1 + net)
+      eq0 <- eq0 * (1 + as.numeric(bench))
+
+      rec[[length(rec) + 1]] <- data.frame(
+        date = dates[i], turnover = turnover, cost_rate = cost_rate,
+        gross = gross, net = net, bench = as.numeric(bench),
+        equity = eq, equity_0050 = eq0,
+        top = paste(paste0(sel$symbol, "(", round(as.numeric(ww) * 100, 1), "%)"), collapse = " "),
+        stringsAsFactors = FALSE
+      )
+      prev_w <- ww
+      prev_ret <- fwd
+    }
+
+    if (!length(rec)) return(NULL)
+    q <- do.call(rbind, rec)
+    per_year <- 252 / hold
+    r <- q$net
+    ann_ret <- (prod(1 + r))^(per_year / length(r)) - 1
+    ann_vol <- stats::sd(r) * sqrt(per_year)
+    dd <- q$equity / cummax(q$equity) - 1
+
+    list(quarters = q, stats = list(
+      n_periods = length(r),
+      cum_ret = prod(1 + r) - 1,
+      ann_ret = ann_ret,
+      ann_vol = ann_vol,
+      sharpe = if (ann_vol > 0) ann_ret / ann_vol else NA_real_,
+      mdd = min(dd, na.rm = TRUE),
+      win_vs_bench = mean(q$net > q$bench, na.rm = TRUE),
+      avg_turnover = mean(q$turnover, na.rm = TRUE),
+      total_cost = sum(q$cost_rate, na.rm = TRUE),
+      bench_cum = prod(1 + q$bench) - 1,
+      bench_ann = (prod(1 + q$bench))^(per_year / length(q$bench)) - 1
+    ))
+  }
+
+  g10_bt <- shiny::eventReactive(input$g10_run_bt, {
+    cap <- input$g10_cap
+    if (is.null(cap) || !is.finite(cap)) cap <- 0.20
+    sch <- input$g10_scheme
+    if (is.null(sch)) sch <- "inv_vol"
+    withProgress(message = "季度回測中…", value = 0, {
+      v4_backtest(as.data.frame(data()), cost = P10_COST, cap = cap,
+                  hold = 63, n = 10, scheme = sch,
+                  progress = function(k, nn, s) {
+                    setProgress(k / nn, detail = paste0("第 ", k, " / ", nn, " 季"))
+                  })
+    })
+  })
+
+
   # ==========================================================
   # 11. 結束 Server
   # ==========================================================
